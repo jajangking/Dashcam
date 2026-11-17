@@ -52,6 +52,7 @@ def _empty_stats() -> Dict:
         "road_frames": 0,
         "road_estimated": 0,     # marka sebelah disintesis dari profil klasik
         "road_held": 0,          # dua sisi hilang, kurva terakhir diprediksi
+        "road_area_dynamic": 0,  # masker area jalan aktif dari kurva terpercaya
         "road_failed": 0,
         "left_est": 0,
         "right_est": 0,
@@ -127,7 +128,7 @@ def process_video_road(
     cap, w, h, total, fps = _open_video(src)
     tmp, writer = _make_writer(dst, fps, w, h)
 
-    cd = LaneDetector()
+    cd = LaneDetector(use_road_area=True)
     stats = _empty_stats()
     # kualitas ini hanya dihitung mode ROAD; jangan tampilkan angka 0.00
     # di mode MODEL/HYBRID yang tidak mengisi metrik klasik.
@@ -146,6 +147,7 @@ def process_video_road(
             if not ok:
                 break
             _unused, info = cd.process(frame)
+            stats["road_area_dynamic"] += int(bool(info.get("road_area_dynamic")))
             left, right = bottom_pair(cd, h, w)
             frames = stats["frames"] + 1
             stats["frames"] = frames
@@ -406,7 +408,8 @@ def run(args: argparse.Namespace) -> None:
             f"dua marka: {stats['road_frames']}/{stats['frames']} | "
             f"kosong: {stats['road_failed']} | "
             f"estimasi satu sisi: {stats['road_estimated']} | "
-            f"ditahan: {stats['road_held']}",
+            f"ditahan: {stats['road_held']} | "
+            f"area jalan dinamis: {stats['road_area_dynamic']}",
             flush=True,
         )
         if stats.get("road_width_px") is not None:

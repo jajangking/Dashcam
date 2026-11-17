@@ -275,6 +275,7 @@ def process_job(job_id, in_path, out_path, kind, orig_name, engine="klasik"):
                     f"ROAD dua marka {stats['road_frames']}/{stats['frames']} frame · "
                     f"estimasi {stats.get('road_estimated', 0)} · "
                     f"ditahan {stats.get('road_held', 0)} · "
+                    f"area dinamis {stats.get('road_area_dynamic', 0)} · "
                     f"kosong {stats.get('road_failed', 0)} · "
                     f"lebar {stats.get('road_width_px') or 0:.1f} px · "
                     f"goyakan {stats.get('road_width_jitter_px') or 0:.2f} px/frame",
@@ -474,6 +475,12 @@ def job_page(job_id):
                     "Sisi diperkirakan",
                     f"{int(st.get('road_estimated', 0))} frame estimasi · "
                     f"{int(st.get('road_held', 0))} frame ditahan",
+                )
+            )
+            stats_rows.append(
+                (
+                    "Area jalan",
+                    f"{int(st.get('road_area_dynamic', 0))} frame koridor dinamis",
                 )
             )
         if "model_frames" in st:

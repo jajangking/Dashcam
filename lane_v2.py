@@ -33,6 +33,7 @@ class LaneDetector:
         color_max_s: int = 70,
         max_mask_density: float = 0.35,
         max_band_spread_px: float = 14.0,
+        use_road_area: bool = False,
     ):
         self.n_windows = n_windows
         self.margin = margin
@@ -46,6 +47,8 @@ class LaneDetector:
         # penjaga "apakah ini gambar jalan?" (lihat _sanity)
         self.max_mask_density = max_mask_density
         self.max_band_spread_px = max_band_spread_px
+        # opsi: batasi pencarian marka ke area jalan (koridor kurva terpercaya)
+        self.use_road_area = use_road_area
         self.sanity_note = ""
 
         # koefisien selalu dalam koordinat ternormalisasi u = y / h
@@ -123,7 +126,7 @@ class LaneDetector:
         return float(np.polyval(d, float(y) / float(self.h)) / float(self.h))
 
     # ---------- masker warna ----------
-    def color_mask(self, frame: np.ndarray, roi: np.ndarray) -> np.ndarray:
+    def color_mask(self, frame: np.ndarray, roi: np.ndarray, area_mask: Optional[np.ndarray] = None) -> np.ndarray:
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         h_ch, s_ch, v_ch = cv2.split(hsv)
 
@@ -134,6 +137,8 @@ class LaneDetector:
         roi_mask = np.zeros_like(mask)
         cv2.fillPoly(roi_mask, roi, 255)
         mask = cv2.bitwise_and(mask, roi_mask)
+        if area_mask is not None:
+            mask = cv2.bitwise_and(mask, area_mask)
 
         k = np.ones((3, 3), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k, iterations=2)
@@ -555,7 +560,13 @@ class LaneDetector:
         h, w = frame.shape[:2]
         self.h, self.w = h, w
         roi = self.roi_vertices(h, w)
-        mask = self.color_mask(frame, roi)
+        area_mask = None
+        if self.use_road_area:
+            from road_area import is_dynamic, road_area_mask
+
+            area_mask = road_area_mask(self, h, w)
+            self._road_area_dynamic = is_dynamic(self)
+        mask = self.color_mask(frame, roi, area_mask)
 
         # --- penjaga: apakah ini gambar jalan yang wajar? ---
         sane, why = self._sanity(mask, roi)
@@ -580,6 +591,7 @@ class LaneDetector:
                 "left_quality": 0.0, "right_quality": 0.0,
                 "left_span_pct": 0.0, "right_span_pct": 0.0,
                 "offset_pct": None, "turn": None,
+                "road_area_dynamic": bool(getattr(self, "_road_area_dynamic", False)),
                 "rejected": why,
             }
         self.sanity_note = ""
@@ -656,6 +668,7 @@ class LaneDetector:
             "right_span_pct": round(float(self.right_span_pct), 1),
             "offset_pct": self.center_offset(w, h),
             "turn": self.turn_label(w, h),
+            "road_area_dynamic": bool(getattr(self, "_road_area_dynamic", False)),
             "rejected": "",
         }
         return out, info

@@ -209,11 +209,14 @@ sebagai jalur percobaan dan perbandingan, bukan pengganti default.
 
 #### Mode ROAD — klasik + cyan (disarankan)
 Deteksi tetap memakai `lane_v2.py` (cepat, tidak butuh bobot 178 MB), tapi
-digambar seperti garis model: cyan + halo dengan label **ROAD**. Satu marka yang
-tertutup orang/benda disintesis memakai profil lebar jalur klasik (garis
-putus-putus + **EST**). Kalau dua sisi hilang sebentar, kurva terakhir dilanjutkan
-dengan kecepatan geser terakhir (maksimal 45 frame) dan ditandai **HOLD** —
-jadi tidak membeku di satu posisi.
+digambar seperti garis model: cyan + halo dengan label **ROAD**. Sekarang ada
+**masker area jalan** (diadaptasi dari Ozgunalp dkk. 2019): pencarian marka
+dibatasi ke koridor dua kurva terpercaya dari frame sebelumnya, jadi piksel
+terang di pagar, bodi mobil, dan gedung tidak lagi menarik sliding-window.
+Satu marka yang tertutup orang/benda disintesis memakai profil lebar jalur
+klasik (garis putus-putus + **EST**). Kalau dua sisi hilang sebentar, kurva
+terakhir dilanjutkan dengan kecepatan geser terakhir (maksimal 45 frame) dan
+ditandai **HOLD** — jadi tidak membeku di satu posisi.
 
 ```bash
 python hybrid_video.py --mode road \
@@ -223,12 +226,13 @@ python hybrid_video.py --mode road \
 
 Di web upload, pilih **"Klasik + cyan — garis ROAD, paling stabil"**.
 
-Hasil footage penuh 444 frame: **374/444** frame dua marka asli, 429 frame sisi
-kiri dan 421 frame sisi kanan tergambar (termasuk estimasi/HOLD), **15 frame
-kosong**, lebar jalur 434 px, goyakan lebar **0,00 px/frame** dan goyakan sisi
-bawah **1,00 px/frame**. Artinya lebar jalur tidak berubah-ubah, tapi garis masih
-ikut bergeser halus mengikuti jalan. Bandingkan dengan mode MODEL: 438/444 dan
-1,74 px/frame. File contoh: `samples/hasil/road_cyan_1001183916.mp4`.
+Hasil footage penuh 444 frame: **377/444** frame dua marka asli, 432 frame sisi
+kiri dan 424 frame sisi kanan tergambar (termasuk estimasi/HOLD), **12 frame
+kosong**, koridor area jalan aktif di 383 frame, lebar jalur 442 px, goyakan
+lebar **0,00 px/frame** dan goyakan sisi bawah **1,00 px/frame**. Artinya lebar
+jalur tidak berubah-ubah, tapi garis masih ikut bergeser halus mengikuti jalan.
+Bandingkan dengan mode MODEL: 438/444 dan 1,74 px/frame. File contoh:
+`samples/hasil/road_cyan_1001183916.mp4`.
 
 #### Mode model saja / cyan (`hybrid_video.py`, opsional)
 Mode ini tetap ada untuk perbandingan. Garisnya cyan dengan label **MODEL**,

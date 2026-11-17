@@ -37,13 +37,15 @@ dua marka, goyakan lebar **1,74 px/frame**, 122 frame disintesis, 6 frame kosong
 Sebelum logika satu sisi: 372/444 dan 2,36 px/frame.
 
 `road_cyan_1001183916.mp4` memakai footage dan frame yang sama, tapi deteksinya
-kembali ke `lane_v2` klasik. Garisnya cyan dengan label **ROAD**; marka yang
+kembali ke `lane_v2` klasik. Garisnya cyan dengan label **ROAD**. Sekarang ada
+masker area jalan: pencarian dibatasi ke koridor kurva terpercaya frame
+sebelumnya, supaya pagar/bodi mobil tidak ditafsirkan sebagai marka. Marka yang
 hilang disintesis dari profil lebar klasik (**EST**), dan saat dua sisi hilang
 kurva dilanjutkan dengan kecepatan terakhir maksimal 45 frame (**HOLD**).
-Hasil 444 frame: 374/444 dua marka asli, 429/444 sisi kiri dan 421/444 sisi
-kanan tergambar, 15 frame kosong, lebar 434 px dengan goyakan **0,00 px/frame**
-(dan goyakan sisi bawah 1,00 px/frame). Ini yang paling stabil dan tidak butuh
-`models/ufld.tflite`.
+Hasil 444 frame: 377/444 dua marka asli, 432/444 sisi kiri dan 424/444 sisi
+kanan tergambar, 12 frame kosong, koridor dinamis 383 frame, lebar 442 px dengan
+goyakan **0,00 px/frame** (dan goyakan sisi bawah 1,00 px/frame). Ini yang paling
+stabil dan tidak butuh `models/ufld.tflite`.
 
 ## Yang sudah bagus (bisa diverifikasi di video)
 

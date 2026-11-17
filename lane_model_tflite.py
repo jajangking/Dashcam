@@ -105,6 +105,7 @@ class ModelLaneDetector:
         self._streak = 0
         self._last_confs: List[float] = []
         self.last_gate = "none"
+        self.last_synth = False
 
     def reset(self) -> None:
         """Lupakan riwayat (pakai saat memulai video/segmen baru)."""
@@ -113,6 +114,7 @@ class ModelLaneDetector:
         self._stale = 0
         self._streak = 0
         self.last_gate = "none"
+        self.last_synth = False
 
     def describe(self) -> str:
         return (
@@ -187,6 +189,55 @@ class ModelLaneDetector:
         _, left, right, conf = pairs[0]
         return (left, right, conf) if confs is not None else (left, right)
 
+    def _single_candidates(self, lanes: List[np.ndarray], h: int, w: int) -> List[Tuple]:
+        """Buat pasangan dari satu marka saja.
+
+        Kalau orang/benda menutup satu marka, jalur tetap diasumsikan muat satu
+        mobil: marka yang hilang dibayangkan sejajar dengan yang terdeteksi,
+        memakai profil lebar jalur terakhir yang dipercaya. Ini jauh lebih tenang
+        daripada membekukan dua garis atau menebak pasangan lajur sebelah.
+        """
+        found = []
+        for i, pts in enumerate(lanes):
+            if len(pts) < 3:
+                continue
+            conf = float(self._last_confs[i]) if i < len(self._last_confs) else 0.0
+            if conf < self.min_conf:
+                continue
+            seen = self._fit(pts, h)
+            if seen.ndim != 2 or len(seen) < 2:
+                continue
+            xb = float(seen[-1, 0])
+
+            if self._prev_x is not None:
+                dl = abs(xb - float(self._prev_x[0][-1]))
+                dr = abs(xb - float(self._prev_x[1][-1]))
+                if min(dl, dr) > 0.15 * w:
+                    continue                     # bukan marka jalur kita
+                side = "L" if dl <= dr else "R"
+                width = self._prev_x[1] - self._prev_x[0]
+                if np.any(width <= 0):
+                    width = 0.5 * w * CURVE_US
+                score = min(dl, dr)
+            else:
+                side = "L" if xb < w / 2.0 else "R"
+                width = 0.5 * w * CURVE_US
+                score = 0.0
+
+            if len(width) != len(seen):
+                width = np.interp(
+                    np.linspace(0, 1, len(seen)), np.linspace(0, 1, len(width)), width
+                )
+            other = seen.copy()
+            if side == "L":
+                other[:, 0] = seen[:, 0] + width
+                left, right = seen, other
+            else:
+                other[:, 0] = seen[:, 0] - width
+                left, right = other, seen
+            found.append((score, -conf, left, right, conf))
+        return sorted(found, key=lambda t: t[:2])
+
     def detect(self, frame: np.ndarray) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         h, w = frame.shape[:2]
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -201,54 +252,55 @@ class ModelLaneDetector:
 
         lanes = self._decode(out, w, h)
         pairs = self._pair_candidates(lanes, w, self._last_confs)
-        if not pairs:
-            self.last_gate = "missing"
-            if self.prev is None:
-                return (None, None)
-            self._stale += 1
-            if self._stale > self.max_stale:
-                self.reset()
-                return (None, None)
-            return self.prev
-
-        conf = 0.0
         raw_l = raw_r = None
-        gate = "low_conf"
+        conf = 0.0
+        gate = "missing" if not pairs else "low_conf"
+        self.last_synth = False
 
-        if self._prev_x is None:
-            # Frame pertama: belum ada patokan geometri, pakai pasangan paling
-            # tengah asal confidence tidak nol.
-            _, l_pts, r_pts, conf = pairs[0]
-            if conf >= self.min_conf:
-                raw_l, raw_r = self._fit(l_pts, h), self._fit(r_pts, h)
+        if pairs:
+            if self._prev_x is None:
+                # Frame pertama: belum ada patokan geometri, pakai pasangan
+                # paling tengah asal confidence tidak nol.
+                _, l_pts, r_pts, conf = pairs[0]
+                if conf >= self.min_conf:
+                    raw_l, raw_r = self._fit(l_pts, h), self._fit(r_pts, h)
+            else:
+                old_l = float(self._prev_x[0][-1])
+                old_r = float(self._prev_x[1][-1])
+                old_w = old_r - old_l
+                ok = []
+                for mid, l_pts, r_pts, c in pairs:
+                    if c < self.min_conf:
+                        continue
+                    fl, fr = self._fit(l_pts, h), self._fit(r_pts, h)
+                    nl, nr = float(fl[-1, 0]), float(fr[-1, 0])
+                    nw = nr - nl
+                    if old_w > 0 and abs(nw - old_w) > self.max_width_change * old_w:
+                        continue                  # pindah lajur, bukan melebar
+                    if max(abs(nl - old_l), abs(nr - old_r)) > 0.15 * w:
+                        continue                  # lonjakan mendadak
+                    ok.append((max(abs(nl - old_l), abs(nr - old_r)), mid, -c, fl, fr, c))
+                if ok:
+                    # Pilih yang paling sedikit bergeser dari kurva terakhir
+                    # yang dipercaya.
+                    _, _, _, raw_l, raw_r, conf = min(ok, key=lambda t: t[:3])
+            if raw_l is not None:
                 gate = "accept"
-        else:
-            old_l = float(self._prev_x[0][-1])
-            old_r = float(self._prev_x[1][-1])
-            old_w = old_r - old_l
-            ok = []
-            for mid, l_pts, r_pts, c in pairs:
-                if c < self.min_conf:
-                    continue
-                fl, fr = self._fit(l_pts, h), self._fit(r_pts, h)
-                nl, nr = float(fl[-1, 0]), float(fr[-1, 0])
-                nw = nr - nl
-                if old_w > 0 and abs(nw - old_w) > self.max_width_change * old_w:
-                    continue                      # pindah lajur, bukan melebar
-                if max(abs(nl - old_l), abs(nr - old_r)) > 0.15 * w:
-                    continue                      # lonjakan mendadak
-                ok.append((max(abs(nl - old_l), abs(nr - old_r)), mid, -c, fl, fr, c))
-            if ok:
-                # Pilih yang paling sedikit bergeser dari kurva terakhir yang
-                # dipercaya. Ini yang menghalangi lompat ke marka sebelah saat
-                # marka aslinya tertutup orang.
-                _, _, _, raw_l, raw_r, conf = min(ok, key=lambda t: t[:3])
+
+        if raw_l is None:
+            # Satu marka tertutup orang/benda: jalur tetap muat satu mobil.
+            # Bayangkan marka yang hilang sejajar dengan yang masih terlihat.
+            singles = self._single_candidates(lanes, h, w)
+            if singles:
+                _, _, raw_l, raw_r, conf = singles[0]
                 gate = "accept"
+                self.last_synth = True
 
         if gate == "accept":
             self._streak += 1
             if self._streak < self.min_streak and self.prev is not None:
                 gate = "streak"
+                self.last_synth = False
         else:
             self._streak = 0
 

@@ -231,27 +231,40 @@ jadi ambang 0,35 akan membekukan semua deteksi. Dipakai ambang 0,05 hanya untuk
 membuang kandidat yang benar-benar nol; penahan garis lebih banyak bekerja lewat
 konsistensi geometri daripada confidence.
 
+Kalau **satu marka** yang tertutup, jalur diasumsikan tetap muat satu mobil:
+marka yang hilang dibayangkan sejajar dengan yang masih terlihat, memakai profil
+lebar jalur terakhir yang dipercaya (aling-aling dengan perspektif). Sisi marka
+yang terlihat ditentukan dari posisinya terhadap kurva terakhir, jadi bukan
+tebakan pasangan lajur sebelah.
+
 Diukur pada clip 120 frame dari footage asli:
 
-| | Model mentah | Smoothing saja | + penahan saat tertutup |
-|---|---|---|---|
-| goyakan lebar jalur | 20,21 px/frame | 7,04 px/frame | **4,27 px/frame** |
-| dua marka | 92/120 | 92/120 | **95/120** |
+| | Model mentah | Smoothing saja | + penahan | + satu sisi disintesis |
+|---|---|---|---|---|
+| goyakan lebar jalur | 20,21 px/frame | 7,04 px/frame | 4,27 px/frame | **4,95 px/frame** |
+| dua marka | 92/120 | 92/120 | 95/120 | **115/120** |
+
+Sintesis dipakai 9 frame; sisanya frame kosong turun dari 25 menjadi 5.
+Goyakan naik tipis karena kurva hasil sintesis ikut sedikit goyakan marka yang
+masih terlihat, tapi jauh lebih rendah daripada tanpa penahan.
 
 Fixture sintetis tetap mengikuti tikungan, tidak membeku: `clear` 60/60 dengan
 goyakan 0,45 px/frame, `wobble` 60/60 dengan 1,44 px/frame, `belok` 60/60 dengan
 0,28 px/frame.
 
-Pada footage penuh 444 frame: **372/444** dua marka, goyakan lebar **2,36
-px/frame** (sebelum penahan 410/444 dan 5,01 px/frame). Trade-off-nya jujur:
-cakupan turun karena penahan sengaja mengosongkan frame daripada menggambar
-pasangan lajur yang salah. `max_stale` bisa dinaikkan untuk menutup lebih banyak
-frame, tapi uji 20/30 frame membuat kurva terlalu lama membeku (goyakan 0,00),
-jadi tidak dipakai.
+Pada footage penuh 444 frame: **438/444 (99%)** dua marka, goyakan lebar **1,74
+px/frame**, 122 frame marka disintesis dari satu sisi, 26 frame kurva ditahan,
+**6 frame kosong**. Bandingkan sebelum logika satu sisi: 372/444 dan 2,36
+px/frame. Jadi cakupan naik sekaligus goyakan turun — tebakan marka sebelah
+ternyata lebih stabil daripada membekukan dua garis.
+
+Catatan kalibrasi lama tetap berlaku: `max_stale` 20/30 frame membuat kurva
+terlalu lama membeku (goyakan 0,00), jadi dipertahankan 12 frame.
 
 Lewat web UI: buka `http://127.0.0.1:5001`, unggah video, lalu centang
 **"Pakai model UFLD saja — garis cyan, tanpa garis kuning klasik"**. Halaman job
-menampilkan baris "Model (cyan)", "Goyakan lebar jalur", dan "Kurva ditahan".
+menampilkan baris "Model (cyan)", "Goyakan lebar jalur", "Kurva ditahan", dan
+"Marka disintesis".
 Kalau `models/ufld.tflite` tidak ada, proses otomatis jatuh ke engine klasik.
 
 Contoh hasil: `samples/hasil/model_saja_1001183916.mp4`. Catatan jujur: model

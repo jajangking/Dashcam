@@ -252,6 +252,7 @@ def process_job(job_id, in_path, out_path, kind, orig_name, use_model=False):
                     f"Model terdeteksi {stats['model_frames']}/{stats['frames']} frame "
                     f"· {stats.get('model_failed', 0)} kosong · "
                     f"ditahan {stats.get('model_held', 0)} frame · "
+                    f"disintesis {stats.get('model_synthesized', 0)} frame · "
                     f"goyakan lebar {stats.get('model_width_jitter_px') or 0:.2f} px/frame",
                 )
             if stats:
@@ -433,6 +434,13 @@ def job_page(job_id):
                     (
                         "Kurva ditahan",
                         f"{int(st['model_held'])} frame (marka tertutup/ragukan)",
+                    )
+                )
+            if st.get("model_synthesized") is not None:
+                stats_rows.append(
+                    (
+                        "Marka disintesis",
+                        f"{int(st['model_synthesized'])} frame dari satu sisi",
                     )
                 )
 

@@ -44,6 +44,7 @@ def _empty_stats() -> Dict:
         "model_frames": 0,
         "model_failed": 0,
         "model_held": 0,         # kurva ditahan karena marka tertutup/ragukan
+        "model_synthesized": 0,  # marka sebelah dibayangkan dari satu sisi
         "model_gate_missing": 0,
         "model_rescued": 0,      # alias untuk kompatibilitas halaman lama
         "left_jitter": [],
@@ -134,6 +135,8 @@ def process_video_model(
             if left is not None and right is not None:
                 if md.last_gate != "accept":
                     stats["model_held"] += 1
+                if md.last_synth:
+                    stats["model_synthesized"] += 1
                 out = draw_model(frame, left, right)
                 stats["model_frames"] += 1
                 stats["left_frames"] += 1
@@ -276,6 +279,7 @@ def run(args: argparse.Namespace) -> None:
         )
     print(
         f"kurva ditahan: {stats['model_held']} frame · "
+        f"marka disintesis dari satu sisi: {stats['model_synthesized']} frame · "
         f"model tidak menemukan pasangan: {stats['model_gate_missing']} frame",
         flush=True,
     )

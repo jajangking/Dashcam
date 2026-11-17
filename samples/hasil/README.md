@@ -24,8 +24,10 @@ hanya engine-nya beda, jadi perbaikan bisa dibandingkan langsung.
 
 - **`sintetis_clear` / `sintetis_wobble`**: garis kiri ikut marka, tidak gemetar.
   Diukur: galat < 1 px, goyangan 1,06–1,54 px/frame.
-- **`asli_v2`**: garis kiri menempel marka. Diukur pada 444 frame: jarak ke marka
-  median **0,35 px**, goyangan median **0,69 px/frame**, terdeteksi 444/444.
+- **`asli_v2`**: garis kiri menempel marka. Saat garis tergambar, jarak ke marka
+  median **0,35 px** dan goyangan median **0,69 px/frame** (diukur pada 444 frame
+  hasil rekonstruksi). Cakupan pada file mentah: kiri tergambar 390/444 frame
+  (15 tebakan), kanan 390/444 (137 tebakan), 9 frame ditolak penjaga "bukan jalan".
   Bandingkan dengan `asli_v1_lama` yang p90-nya 14,6 px dan sempat "membalik arah"
   sampai 339 px.
 
@@ -48,6 +50,10 @@ hanya engine-nya beda, jadi perbaikan bisa dibandingkan langsung.
    sepanjang `u = 0,62–1,0`, hasilnya 241 px — masuk akal.
 5. **Sebagian besar fixture tidak punya generator.** 22 dari 30 file di `samples/`
    tidak bisa dibuat ulang, jadi regresi sulit direproduksi (lihat `AUDIT.md`).
+6. **Rekaman malam yang sangat gelap tidak terdeteksi sama sekali.**
+   `samples/mentah/mentah_1001183936.mp4` (1080×1920, 315 frame): median piksel 0,
+   engine mengembalikan 0 deteksi di semua frame yang disampel. Belum ada mode
+   low-light / peningkatan kontras sebelum deteksi.
 
 ## Cara membuat ulang
 
@@ -59,5 +65,8 @@ python lane_detect.py samples/case_video_belok.mp4  -o out_belok.mp4  --no-show
 python lane_detect.py samples/case_video_toll.mp4   -o out_toll.mp4   --no-show
 ```
 
-Untuk footage asli pengguna, video sumbernya tidak ikut di-commit (berisi rekaman
-pribadi), jadi `asli_v2.mp4` hanya bisa dibuat ulang kalau file aslinya tersedia.
+Footage aslinya ada di `samples/mentah/` (lihat README di sana):
+
+```bash
+python lane_detect.py samples/mentah/mentah_1001183916.mp4 -o asli_v2_ulang.mp4 --no-show
+```

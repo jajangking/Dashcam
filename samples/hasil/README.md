@@ -28,9 +28,10 @@ kedua marka. Label "MODEL" muncul di frame tersebut. Ini bukti bahwa model
 menolong 65 dari 70 frame yang kosong, bukan pengganti seluruh deteksi.
 
 `model_saja_1001183916.mp4` memakai footage yang sama, tapi **garis kuning klasik
-dihilangkan** — semua frame memakai model cyan. Kurvanya sudah di-smoothing
-(goyakan lebar turun dari 20,21 menjadi 7,04 px/frame pada clip uji 120 frame),
-jadi tidak ada lagi pergantian warna/posisi mendadak antar-engine.
+dihilangkan** — semua frame memakai model cyan. Kurvanya sudah di-smoothing dan
+diberi penahan saat marka tertutup orang: goyakan lebar turun dari 20,21 menjadi
+**2,36 px/frame** pada footage 444 frame. Cakupan dua marka 372/444; frame yang
+tidak yakin sengaja dikosongkan daripada digambari pasangan lajur yang salah.
 
 ## Yang sudah bagus (bisa diverifikasi di video)
 

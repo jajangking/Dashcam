@@ -43,6 +43,8 @@ def _empty_stats() -> Dict:
         "right_frames": 0,
         "model_frames": 0,
         "model_failed": 0,
+        "model_held": 0,         # kurva ditahan karena marka tertutup/ragukan
+        "model_gate_missing": 0,
         "model_rescued": 0,      # alias untuk kompatibilitas halaman lama
         "left_jitter": [],
         "right_jitter": [],
@@ -127,8 +129,11 @@ def process_video_model(
             left, right = md.detect(frame)
             frames = stats["frames"] + 1
             stats["frames"] = frames
-
+            if md.last_gate == "missing":
+                stats["model_gate_missing"] += 1
             if left is not None and right is not None:
+                if md.last_gate != "accept":
+                    stats["model_held"] += 1
                 out = draw_model(frame, left, right)
                 stats["model_frames"] += 1
                 stats["left_frames"] += 1
@@ -269,6 +274,11 @@ def run(args: argparse.Namespace) -> None:
             f"goyakan {stats['model_width_jitter_px']:.2f} px/frame",
             flush=True,
         )
+    print(
+        f"kurva ditahan: {stats['model_held']} frame · "
+        f"model tidak menemukan pasangan: {stats['model_gate_missing']} frame",
+        flush=True,
+    )
 
 
 def main() -> None:

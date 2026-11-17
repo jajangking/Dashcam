@@ -219,19 +219,40 @@ Mode lama masih ada untuk perbandingan:
 `python hybrid_video.py --mode hybrid --input ... --output ...`
 (klasik di semua frame + cyan hanya saat dua marka hilang).
 
-Kurva di-rata-rata antarframe (`alpha=0.35`) dan lonjakan > 15% lebar gambar
-ditolak sebagai salah deteksi. Diukur pada clip 120 frame dari footage asli:
+Kurva di-rata-rata antarframe (`alpha=0.35`). Kalau orang lewat dan marka
+tertutup, model sempat memilih pasangan lajur yang salah (lebar 208 → 395 px,
+tepi kanan bolak-balik 494 ↔ 681 px). Sekarang **setiap kandidat diuji dulu
+terhadap kurva terakhir yang dipercaya**: pergeseran tepi < 15% gambar, lebar
+maksimal berubah 35%/frame, dan di antara yang lolos dipilih yang paling sedikit
+bergeser. Kalau tidak ada yang lolos, kurva lama ditahan sampai 12 frame.
 
-| | Model mentah | Model sudah di-smoothing |
-|---|---|---|
-| goyakan lebar jalur | 20,21 px/frame | **7,04 px/frame** |
-| goyakan tepi kanan | 20,14 px/frame | **7,56 px/frame** |
-| dua marka | 92/120 | 92/120 |
+Confidence absolut model ini ternyata rendah di footage asli (median 0,15),
+jadi ambang 0,35 akan membekukan semua deteksi. Dipakai ambang 0,05 hanya untuk
+membuang kandidat yang benar-benar nol; penahan garis lebih banyak bekerja lewat
+konsistensi geometri daripada confidence.
+
+Diukur pada clip 120 frame dari footage asli:
+
+| | Model mentah | Smoothing saja | + penahan saat tertutup |
+|---|---|---|---|
+| goyakan lebar jalur | 20,21 px/frame | 7,04 px/frame | **4,27 px/frame** |
+| dua marka | 92/120 | 92/120 | **95/120** |
+
+Fixture sintetis tetap mengikuti tikungan, tidak membeku: `clear` 60/60 dengan
+goyakan 0,45 px/frame, `wobble` 60/60 dengan 1,44 px/frame, `belok` 60/60 dengan
+0,28 px/frame.
+
+Pada footage penuh 444 frame: **372/444** dua marka, goyakan lebar **2,36
+px/frame** (sebelum penahan 410/444 dan 5,01 px/frame). Trade-off-nya jujur:
+cakupan turun karena penahan sengaja mengosongkan frame daripada menggambar
+pasangan lajur yang salah. `max_stale` bisa dinaikkan untuk menutup lebih banyak
+frame, tapi uji 20/30 frame membuat kurva terlalu lama membeku (goyakan 0,00),
+jadi tidak dipakai.
 
 Lewat web UI: buka `http://127.0.0.1:5001`, unggah video, lalu centang
 **"Pakai model UFLD saja — garis cyan, tanpa garis kuning klasik"**. Halaman job
-menampilkan baris "Model (cyan)" dan "Goyakan lebar jalur". Kalau
-`models/ufld.tflite` tidak ada, proses otomatis jatuh ke engine klasik.
+menampilkan baris "Model (cyan)", "Goyakan lebar jalur", dan "Kurva ditahan".
+Kalau `models/ufld.tflite` tidak ada, proses otomatis jatuh ke engine klasik.
 
 Contoh hasil: `samples/hasil/model_saja_1001183916.mp4`. Catatan jujur: model
 masih **lebih lambat** (~660 ms/frame) dan goyakannya masih di atas engine klasik

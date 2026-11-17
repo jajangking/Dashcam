@@ -251,6 +251,7 @@ def process_job(job_id, in_path, out_path, kind, orig_name, use_model=False):
                     job_id,
                     f"Model terdeteksi {stats['model_frames']}/{stats['frames']} frame "
                     f"· {stats.get('model_failed', 0)} kosong · "
+                    f"ditahan {stats.get('model_held', 0)} frame · "
                     f"goyakan lebar {stats.get('model_width_jitter_px') or 0:.2f} px/frame",
                 )
             if stats:
@@ -427,6 +428,13 @@ def job_page(job_id):
             wj = st.get("model_width_jitter_px")
             if wj is not None:
                 stats_rows.append(("Goyakan lebar jalur", _px(wj)))
+            if st.get("model_held") is not None:
+                stats_rows.append(
+                    (
+                        "Kurva ditahan",
+                        f"{int(st['model_held'])} frame (marka tertutup/ragukan)",
+                    )
+                )
 
     return render_template_string(
         JOB_HTML,

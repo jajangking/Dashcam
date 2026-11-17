@@ -63,12 +63,22 @@ class ModelLaneDetector:
         threads: int = 2,
         smooth: bool = True,
         alpha: float = 0.35,
-        max_stale: int = 8,
+        min_conf: float = 0.05,
+        min_streak: int = 1,
+        max_width_change: float = 0.35,
+        max_stale: int = 12,
     ):
         """`smooth` meratakan kurva antarframe; `alpha` = bobot frame baru.
 
-        alpha kecil = lebih stabil tapi lebih lambat bereaksi. max_stale = berapa
-        frame kurva lama dipakai saat model gagal sebelum dianggap hilang.
+        Saat marka tertutup objek, model bisa memilih pasangan lajur yang salah.
+        Tiap kandidat diuji terhadap kurva terakhir yang dipercaya: pergeseran
+        tepi < 15% gambar dan lebar tidak berubah > `max_width_change` per frame.
+        Di antara yang lolos, dipilih yang paling sedikit bergeser. Kalau tidak
+        ada yang lolos, kurva lama ditahan sampai `max_stale` frame.
+
+        Catatan kalibrasi: confidence absolut model ini rendah di footage asli
+        (median ~0,15), jadi ambang 0,35 membekukan semua deteksi. Ambang 0,05
+        hanya membuang kandidat yang benar-benar nol.
         """
         if not Path(model_path).exists():
             raise FileNotFoundError(
@@ -86,15 +96,23 @@ class ModelLaneDetector:
         self.smooth = smooth
         self.alpha = float(alpha)
         self.max_stale = int(max_stale)
+        self.min_conf = float(min_conf)
+        self.min_streak = int(min_streak)
+        self.max_width_change = float(max_width_change)
         self._prev_x: Optional[Tuple[np.ndarray, np.ndarray]] = None
         self.prev: Optional[Tuple[np.ndarray, np.ndarray]] = None
         self._stale = 0
+        self._streak = 0
+        self._last_confs: List[float] = []
+        self.last_gate = "none"
 
     def reset(self) -> None:
         """Lupakan riwayat (pakai saat memulai video/segmen baru)."""
         self._prev_x = None
         self.prev = None
         self._stale = 0
+        self._streak = 0
+        self.last_gate = "none"
 
     def describe(self) -> str:
         return (
@@ -104,6 +122,13 @@ class ModelLaneDetector:
 
     def _decode(self, out: np.ndarray, w: int, h: int) -> List[np.ndarray]:
         """Ubah logits row-anchor menjadi empat daftar titik (x, y) dalam piksel."""
+        lanes, confs = self._decode_conf(out, w, h)
+        self._last_confs = confs
+        return lanes
+
+    @staticmethod
+    def _decode_conf(out: np.ndarray, w: int, h: int):
+        """Sama seperti _decode, tapi ikut mengembalikan keyakinan per lajur."""
         logits = np.asarray(out)
         # bentuk umum: [1, 201, 18, 4] -> [grid+1, anchor, lajur]
         while logits.ndim > 3 and logits.shape[0] == 1:
@@ -118,6 +143,7 @@ class ModelLaneDetector:
         ys = ROW_ANCHORS / 288.0 * h
         xs_col = np.linspace(0, 799, GRID) / 800.0 * w
         lanes: List[np.ndarray] = []
+        confs: List[float] = []
         for li in range(logits.shape[2]):
             score = logits[:, :, li]                   # [201, 18]
             cell = score[:GRID, :]
@@ -125,23 +151,41 @@ class ModelLaneDetector:
             prob /= prob.sum(axis=0, keepdims=True)
             col_f = (prob * np.arange(GRID)[:, None]).sum(axis=0)
             no_lane = score.argmax(axis=0) == GRID
+            valid = ~no_lane
             pts = np.stack([xs_col[np.clip(np.round(col_f), 0, GRID - 1).astype(int)], ys], axis=1)
-            lanes.append(pts[~no_lane])
-        return lanes
+            lanes.append(pts[valid])
+            confs.append(float(np.mean(prob.max(axis=0)[valid])) if valid.any() else 0.0)
+        return lanes, confs
 
     @staticmethod
-    def _pick_pair(lanes: List[np.ndarray], w: int) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-        """Pilih dua marka tepi jalur yang paling dekat dengan tengah gambar."""
+    def _pair_candidates(
+        lanes: List[np.ndarray], w: int, confs: Optional[List[float]] = None
+    ) -> List[Tuple]:
+        """Semua pasangan marka yang mungkin, urut menurut jarak ke tengah."""
         cands = []
-        for pts in lanes:
+        for i, pts in enumerate(lanes):
             if len(pts) >= 3:
-                cands.append((float(np.median(pts[-4:, 0])), pts))
+                conf = float(confs[i]) if confs is not None and i < len(confs) else 0.0
+                cands.append((float(np.median(pts[-4:, 0])), pts, conf))
         if len(cands) < 2:
-            return None
+            return []
         cands.sort(key=lambda t: t[0])
-        pairs = [(abs((a[0] + b[0]) / 2.0 - w / 2.0), a[1], b[1]) for a, b in zip(cands, cands[1:])]
-        _, left, right = min(pairs, key=lambda t: t[0])
-        return left, right
+        pairs = [
+            (abs((a[0] + b[0]) / 2.0 - w / 2.0), a[1], b[1], min(a[2], b[2]))
+            for a, b in zip(cands, cands[1:])
+        ]
+        return sorted(pairs, key=lambda t: t[0])
+
+    @staticmethod
+    def _pick_pair(
+        lanes: List[np.ndarray], w: int, confs: Optional[List[float]] = None
+    ) -> Optional[Tuple]:
+        """Pasangan paling tengah (dipakai saat belum ada riwayat frame)."""
+        pairs = ModelLaneDetector._pair_candidates(lanes, w, confs)
+        if not pairs:
+            return None
+        _, left, right, conf = pairs[0]
+        return (left, right, conf) if confs is not None else (left, right)
 
     def detect(self, frame: np.ndarray) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         h, w = frame.shape[:2]
@@ -155,8 +199,10 @@ class ModelLaneDetector:
         self.interpreter.invoke()
         out = self.interpreter.get_tensor(self.out_detail["index"])
 
-        pair = self._pick_pair(self._decode(out, w, h), w)
-        if pair is None:
+        lanes = self._decode(out, w, h)
+        pairs = self._pair_candidates(lanes, w, self._last_confs)
+        if not pairs:
+            self.last_gate = "missing"
             if self.prev is None:
                 return (None, None)
             self._stale += 1
@@ -165,28 +211,73 @@ class ModelLaneDetector:
                 return (None, None)
             return self.prev
 
-        raw_l, raw_r = self._fit(pair[0], h), self._fit(pair[1], h)
+        conf = 0.0
+        raw_l = raw_r = None
+        gate = "low_conf"
+
+        if self._prev_x is None:
+            # Frame pertama: belum ada patokan geometri, pakai pasangan paling
+            # tengah asal confidence tidak nol.
+            _, l_pts, r_pts, conf = pairs[0]
+            if conf >= self.min_conf:
+                raw_l, raw_r = self._fit(l_pts, h), self._fit(r_pts, h)
+                gate = "accept"
+        else:
+            old_l = float(self._prev_x[0][-1])
+            old_r = float(self._prev_x[1][-1])
+            old_w = old_r - old_l
+            ok = []
+            for mid, l_pts, r_pts, c in pairs:
+                if c < self.min_conf:
+                    continue
+                fl, fr = self._fit(l_pts, h), self._fit(r_pts, h)
+                nl, nr = float(fl[-1, 0]), float(fr[-1, 0])
+                nw = nr - nl
+                if old_w > 0 and abs(nw - old_w) > self.max_width_change * old_w:
+                    continue                      # pindah lajur, bukan melebar
+                if max(abs(nl - old_l), abs(nr - old_r)) > 0.15 * w:
+                    continue                      # lonjakan mendadak
+                ok.append((max(abs(nl - old_l), abs(nr - old_r)), mid, -c, fl, fr, c))
+            if ok:
+                # Pilih yang paling sedikit bergeser dari kurva terakhir yang
+                # dipercaya. Ini yang menghalangi lompat ke marka sebelah saat
+                # marka aslinya tertutup orang.
+                _, _, _, raw_l, raw_r, conf = min(ok, key=lambda t: t[:3])
+                gate = "accept"
+
+        if gate == "accept":
+            self._streak += 1
+            if self._streak < self.min_streak and self.prev is not None:
+                gate = "streak"
+        else:
+            self._streak = 0
+
+        if gate != "accept":
+            self.last_gate = gate
+            if self.prev is None:
+                return (None, None)
+            if gate != "streak":
+                self._stale += 1
+                if self._stale > self.max_stale:
+                    self.reset()
+                    return (None, None)
+            return self.prev
+
         if (
             self.smooth
             and self._prev_x is not None
             and len(raw_l) == len(self._prev_x[0])
             and len(raw_r) == len(self._prev_x[1])
         ):
-            # Lonjakan besar di bawah gambar biasanya salah deteksi, bukan belokan.
-            # Jangan tarik kurva lama ke posisi itu; mulai dari awal lagi.
-            jump = max(
-                abs(raw_l[-1, 0] - self._prev_x[0][-1]),
-                abs(raw_r[-1, 0] - self._prev_x[1][-1]),
-            )
-            if jump < 0.15 * w:
-                a = self.alpha
-                raw_l = raw_l.copy()
-                raw_r = raw_r.copy()
-                raw_l[:, 0] = a * raw_l[:, 0] + (1 - a) * self._prev_x[0]
-                raw_r[:, 0] = a * raw_r[:, 0] + (1 - a) * self._prev_x[1]
+            a = self.alpha
+            raw_l = raw_l.copy()
+            raw_r = raw_r.copy()
+            raw_l[:, 0] = a * raw_l[:, 0] + (1 - a) * self._prev_x[0]
+            raw_r[:, 0] = a * raw_r[:, 0] + (1 - a) * self._prev_x[1]
         self._prev_x = (raw_l[:, 0].copy(), raw_r[:, 0].copy())
         self.prev = (raw_l, raw_r)
         self._stale = 0
+        self.last_gate = "accept"
         return self.prev
 
     @staticmethod

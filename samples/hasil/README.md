@@ -1,0 +1,63 @@
+# Video hasil deteksi (untuk ditindak lanjuti)
+
+Kumpulan video **output** dari engine deteksi, supaya kekurangannya bisa dilihat
+langsung tanpa harus memproses ulang. Semua H.264 + `yuv420p` (bisa diputar di browser).
+
+> Penting: file di sini **belum** dibuat dengan commit terbaru. Lihat kolom
+> "Dibuat dengan" — dua video asli dan empat video sintetis masih dari engine
+> sebelum commit `06a4750` / `2300cfe`. Kalau mau yang mencerminkan kode sekarang,
+> minta regenerasi (lihat bagian bawah).
+
+| File | Sumber | Durasi / frame | Dibuat dengan |
+|---|---|---|---|
+| `asli_v1_lama.mp4` | video dashcam pengguna (444 frame) | 14,8 s / 444 | engine v1 (sebelum v2) |
+| `asli_v2.mp4` | video dashcam pengguna yang sama | 14,8 s / 444 | engine v2.2 |
+| `sintetis_clear.mp4` | `samples/case_video_clear.mp4` | 4,0 s / 120 | engine v2.2 |
+| `sintetis_wobble.mp4` | `samples/case_video_wobble.mp4` | 4,0 s / 120 | engine v2.2 |
+| `sintetis_belok.mp4` | `samples/case_video_belok.mp4` | 4,0 s / 120 | engine v2.2 |
+| `sintetis_toll.mp4` | `samples/case_video_toll.mp4` | 5,0 s / 150 | engine v2.2 |
+
+`asli_v1_lama.mp4` vs `asli_v2.mp4` sengaja berpasangan: footage dan frame-nya sama,
+hanya engine-nya beda, jadi perbaikan bisa dibandingkan langsung.
+
+## Yang sudah bagus (bisa diverifikasi di video)
+
+- **`sintetis_clear` / `sintetis_wobble`**: garis kiri ikut marka, tidak gemetar.
+  Diukur: galat < 1 px, goyangan 1,06–1,54 px/frame.
+- **`asli_v2`**: garis kiri menempel marka. Diukur pada 444 frame: jarak ke marka
+  median **0,35 px**, goyangan median **0,69 px/frame**, terdeteksi 444/444.
+  Bandingkan dengan `asli_v1_lama` yang p90-nya 14,6 px dan sempat "membalik arah"
+  sampai 339 px.
+
+## Yang masih kurang (ini yang perlu ditindak lanjuti)
+
+1. **Tikungan kanan tajam masih meleset 24–52 px** — terlihat di `sintetis_belok`
+   pada bagian tikungan. Fixture ujinya: `samples/case_belok_240/360/480.jpg`.
+   Belum diperbaiki (lihat `README.md` utama).
+2. **Sisi kanan jalur hampir tidak terlihat di footage asli.** Di `asli_v2`,
+   ±150 dari 444 frame sisi kanan hanya **tebakan** (`right_estimated`), bukan
+   deteksi. Garis kanan yang tergambar di sana jangan dipercaya sebagai ukuran.
+3. **Video tol / marka pudar** (`sintetis_toll`): estimasi lateral belum layak
+   dipakai. Diukur pada video sejenis: 24% frame ditandai "garis bergeser bersama",
+   dan titik path 4 m masih goyang ±37 px.
+4. **Geometri metrik (jarak/pindah lajur) gagal di footage asli pengguna**:
+   `RoadModel.is_valid()` = False, cakrawala terhitung **−514 px** (seharusnya
+   ±228 px). Penyebab: lebar jalur dipelajari hanya dari dua titik di
+   `u = 0,86–1,0` (14% tinggi gambar), sehingga galat kecil di baris bawah
+   meledak saat diekstrapolasi ke cakrawala. Kalau diukur dengan least-squares
+   sepanjang `u = 0,62–1,0`, hasilnya 241 px — masuk akal.
+5. **Sebagian besar fixture tidak punya generator.** 22 dari 30 file di `samples/`
+   tidak bisa dibuat ulang, jadi regresi sulit direproduksi (lihat `AUDIT.md`).
+
+## Cara membuat ulang
+
+```bash
+# video sintetis (pakai kode yang sedang aktif di repo)
+python lane_detect.py samples/case_video_clear.mp4  -o out_clear.mp4  --no-show
+python lane_detect.py samples/case_video_wobble.mp4 -o out_wobble.mp4 --no-show
+python lane_detect.py samples/case_video_belok.mp4  -o out_belok.mp4  --no-show
+python lane_detect.py samples/case_video_toll.mp4   -o out_toll.mp4   --no-show
+```
+
+Untuk footage asli pengguna, video sumbernya tidak ikut di-commit (berisi rekaman
+pribadi), jadi `asli_v2.mp4` hanya bisa dibuat ulang kalau file aslinya tersedia.

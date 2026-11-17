@@ -13,3 +13,6 @@ uploads/
 .DS_Store
 .venv/
 venv/
+
+# Mode live
+static/*.map

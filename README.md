@@ -149,6 +149,44 @@ Batasan estimasi jarak: jalan dianggap **datar**, lebar lajur diasumsikan 3.5 m,
 dan parameter kamera (tinggi 1.3 m, sudut pandang 55°) masih nilai tipikal —
 belum dikalibrasi ke kamera Anda. Angka jarak adalah **estimasi**, bukan sensor.
 
+### Marka tertutup benda & tikungan tajam (footage mentah asli)
+Diuji pada `samples/mentah/mentah_1001183916.mp4` (864x544, 444 frame, dashcam
+DDPAI Mola N3 Pro, Jakarta siang, hujan).
+
+**Bug: kurva diekstrapolasi jauh di luar data teramati.** Pada tikungan tajam,
+marka kanan hanya terlihat sampai `u = 0.74` (terhalang angkot), tapi kurva
+derajat 2 tetap dipakai sampai `u = 1.0`. Diukur pada `case_belok_480` dengan
+ground truth generator: galat **0.4 px di dalam data, 223 px di luar data**.
+Sekarang rentang teramati (`*_obs_u`) dicatat tiap frame, dan bagian bawah yang
+tidak terlihat dibangun dari sisi yang terlihat + lebar jalur (kedua batas jalan
+nyata hampir sejajar). Pada video tikungan sintetis: **172 px -> 25 px**.
+
+**Bug: lebar jalur dipelajari dari dua titik ekstrapolasi.** Versi lama memakai
+`u=0.86` dan `u=1.0`, yang pada footage asli justru di luar data (titik nol lebar
+jalur terhitung di `u=-0.58`, di luar gambar) sehingga geometri metrik mati.
+Sekarang lebar dipelajari dengan least-squares pada **irisan rentang teramati
+kedua sisi**, dan ditolak kalau cakrawala hasilnya di luar `u 0.25-0.80`.
+
+**Yang TIDAK berhasil dan saya batalkan.** Percobaan memberi fallback cermin
+cakrawala `u=0.45` terlihat bagus di sintetis (geometri valid 0% -> 36%), tapi di
+footage asli galat sisi kanan **memburuk: median 89 -> 123 px**, lalu 193 px saat
+perluasan ikut memakai lebar asumsi itu. Perubahannya dibatalkan, dan perluasan
+sekarang hanya boleh memakai lebar jalur terukur (>=3 sampel, bukan asumsi).
+Hasil akhir footage asli: **89.0 -> 89.8 px** (praktis tidak berubah).
+
+**Batas yang diakui:**
+- Sisi kanan di footage asli masih meleset **~90 px** median. Marka kanan di sana
+  memang sebagian besar tidak terlihat; yang diperbaiki adalah sistem berhenti
+  mengarang di area yang tidak pernah dilihatnya.
+- Pada **satu gambar** tikungan tanpa riwayat frame, manfaat perbaikan belum ada
+  (lebar jalur belum pernah terukur). Perbaikan bekerja pada **urutan frame**.
+- Video malam potret (`mentah_1001183936.mp4`): marka terdeteksi **45%** frame.
+  Engine memang hanya bekerja kalau marka masih terlihat kamera.
+- `samples/hasil/asli_v2.mp4` **bukan bukti valid**: overlay-nya berwarna kuning,
+  dan kuning diterima `color_mask`. Diuji: frame ber-overlay terdeteksi dengan
+  kualitas **1.00/1.00**, padahal setelah overlay dibersihkan sisi kanan tidak
+  terdeteksi sama sekali. Video itu mendeteksi gambarnya sendiri.
+
 ### Bug yang ditemukan dari keluhan pengguna (path loncat, estimasi melebar)
 Dua bug nyata, keduanya sudah diperbaiki:
 

@@ -127,7 +127,7 @@ def index():
 def _empty_geometry(drifting: bool = False) -> dict:
     return {"valid": False, "lane_change": "", "shift_m": 0.0,
             "drift_warning": False, "path": [], "moving": False,
-            "drifting": drifting}
+            "drifting": drifting, "width_assumed": False}
 
 
 def _reset_tracking(sess: dict) -> None:
@@ -181,6 +181,7 @@ def _update_geometry(sess: dict, det, model: RoadModel, h: int, w: int) -> dict:
     return {"valid": True, "lane_change": sess["lane_change"],
             "shift_m": round(float(shift), 2),
             "drift_warning": bool(traj.drift_warning), "path": path,
+            "width_assumed": bool(getattr(det, "lane_w_mirror", False)),
             "moving": float(traj.travelled_m) > 0.5,
             "horizon_row": round(model.horizon_row(), 1), "drifting": False}
 

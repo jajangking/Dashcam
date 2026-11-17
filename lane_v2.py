@@ -71,6 +71,15 @@ class LaneDetector:
         self.right_estimated = False
         self.left_stale = False
         self.right_stale = False
+        # Rentang u (=y/h) yang BENAR-BENAR teramati per sisi. Ini kunci: kurva
+        # derajat 2 yang dipakai jauh di luar rentang datanya akan melengkung ke
+        # arah yang salah. Terukur di `case_belok_480`: galat 0.4 px di dalam
+        # data, 189 px di luar data.
+        self.left_obs_u: Optional[Tuple[float, float]] = None
+        self._learned_this_frame = False
+        self.right_obs_u: Optional[Tuple[float, float]] = None
+        self.left_extended = False
+        self.right_extended = False
         self.left_draw = None
         self.right_draw = None
 
@@ -255,8 +264,14 @@ class LaneDetector:
             c[0] = float(np.clip(c[0], -limit, limit))
         return np.asarray(c, dtype=np.float64)
 
-    def _plausible(self, coeff: np.ndarray, side: str) -> bool:
-        """Saringan kasar supaya garis tidak jatuh ke objek yang jelas bukan jalur."""
+    def _plausible(self, coeff: np.ndarray, side: str,
+                   max_slope: float = 3.0) -> bool:
+        """Saringan kasar supaya garis tidak jatuh ke objek yang jelas bukan jalur.
+
+        `max_slope` bisa dilonggarkan untuk kurva yang DIBANGUN (bukan dideteksi):
+        pada tikungan tajam asli kemiringan marka memang bisa 3.2 px/px, terukur
+        di `case_belok_480`.
+        """
         x_top = float(np.polyval(coeff, 0.62))
         x_mid = float(np.polyval(coeff, 0.80))
         x_bot = float(np.polyval(coeff, 1.00))
@@ -274,7 +289,7 @@ class LaneDetector:
         if side == "R" and x_bot < 0.10 * self.w:
             return False
         s2 = self._slope(coeff, self.h - 1)
-        if not np.isfinite(s2) or abs(s2) > 3.0:
+        if not np.isfinite(s2) or abs(s2) > max_slope:
             return False
         return True
 
@@ -373,6 +388,28 @@ class LaneDetector:
         a1 = slope * self.h
         a0 = b["cx"] - slope * b["cy"]
         return np.array([a1, a0], dtype=np.float64), 0.22
+
+    def _observed_range(self, mask: np.ndarray, coeff: np.ndarray,
+                        tol_px: Optional[float] = None) -> Optional[Tuple[float, float]]:
+        """Rentang u yang benar-benar punya piksel marka di dekat kurva.
+
+        Ini menandai batas "data" lawan "ekstrapolasi". Tanpa ini, sisi yang
+        terhalang truk tetap digambar sampai bawah gambar seolah terdeteksi.
+        """
+        h, w = mask.shape[:2]
+        tol = float(tol_px if tol_px is not None else max(12.0, 0.02 * w))
+        rows = np.arange(int(0.55 * h), h, max(2, h // 120))
+        # ambil hanya baris yang punya piksel mask di sekitar kurva
+        nz_y, nz_x = np.nonzero(mask)
+        if len(nz_y) == 0:
+            return None
+        keep = np.zeros(len(nz_y), dtype=bool)
+        pred = np.polyval(coeff, nz_y / float(h))
+        keep = np.abs(nz_x - pred) <= tol
+        if keep.sum() < 40:
+            return None
+        us = nz_y[keep] / float(h)
+        return float(us.min()), float(us.max())
 
     # ---------- dukungan piksel ----------
     def _support(self, dmap: np.ndarray, coeff: np.ndarray) -> float:
@@ -555,6 +592,7 @@ class LaneDetector:
 
         if new_left is not None:
             self.left_coeff = self._smooth(self.left_coeff, new_left, q_left)
+            self.left_obs_u = self._observed_range(mask, self.left_coeff)
             self.left_missing = 0
             self.left_stale = False
             self.left_quality = 0.6 * self.left_quality + 0.4 * q_left if self.left_quality else q_left
@@ -569,6 +607,7 @@ class LaneDetector:
 
         if new_right is not None:
             self.right_coeff = self._smooth(self.right_coeff, new_right, q_right)
+            self.right_obs_u = self._observed_range(mask, self.right_coeff)
             self.right_missing = 0
             self.right_stale = False
             self.right_quality = 0.6 * self.right_quality + 0.4 * q_right if self.right_quality else q_right
@@ -580,6 +619,14 @@ class LaneDetector:
                 self.right_stale = True
                 self.right_quality = 0.0
 
+        self.left_extended = False
+        self.right_extended = False
+        # urutan penting: perluasan butuh model lebar, jadi pelajari dulu
+        self._learned_this_frame = False
+        if (self.left_coeff is not None and not self.left_stale
+                and self.right_coeff is not None and not self.right_stale):
+            self._learned_this_frame = self._learn_lane_width(w)
+        self._extend_short_sides(h, w)
         self._reconstruct_missing_side(h, w)
 
         out = self.draw(frame, roi, mask if debug_mask else None)
@@ -592,6 +639,11 @@ class LaneDetector:
             "right_stale": self.right_stale,
             "left_estimated": self.left_estimated,
             "right_estimated": self.right_estimated,
+            "left_extended": self.left_extended,
+            "right_extended": self.right_extended,
+            "width_assumed": bool(self.lane_w_mirror),
+            "left_obs_u": self.left_obs_u,
+            "right_obs_u": self.right_obs_u,
             "left_points": len(left_pts),
             "right_points": len(right_pts),
             "left_quality": round(float(self.left_quality), 2),
@@ -621,39 +673,16 @@ class LaneDetector:
             return
 
         if ld_fresh and rd_fresh:
-            # Pelajari lebar jalur di DUA ketinggian, lalu modelkan sebagai garis
-            # lurus terhadap u (W = a*u + b). Titik acuan diambil agak ke atas
-            # (bukan di y=h-1) supaya tidak terpengaruh tepi gambar.
-            u_lo, u_hi = 0.86, 1.0
-            w_lo = self._width_at(u_lo * h)
-            w_hi = self._width_at(u_hi * h)
-            # Ambang kualitas di sini sengaja longgar. Nilai `quality` adalah skor
-            # kemiripan bentuk (0..1) — pada video tol/dashgap nyata nilainya
-            # hanya ~0.3 walaupun kedua marka terdeteksi benar, sehingga ambang
-            # 0.55 membuat geometri metrik praktis TIDAK PERNAH aktif (terukur
-            # 0% pada 3 dari 6 video contoh). Validitas sekarang dijaga oleh
-            # pemeriksaan geometri di bawah (lebar wajar + menyempit ke atas).
-            if (
-                w_lo is not None and w_hi is not None
-                and 0.08 * w < w_hi < 1.10 * w
-                and 0.05 * w < w_lo < 1.10 * w
-                and self.left_quality >= 0.20
-                and self.right_quality >= 0.20
-            ):
-                a_now = (w_hi - w_lo) / (u_hi - u_lo)
-                b_now = w_hi - a_now * u_hi
-                if self.lane_w_a is None:
-                    self.lane_w_a, self.lane_w_b = a_now, b_now
-                    self.lane_w_samples = 1
-                    self.lane_w_mirror = False
-                else:
-                    alpha = 0.12  # lebar jalur sangat halus
-                    self.lane_w_a = (1 - alpha) * self.lane_w_a + alpha * a_now
-                    self.lane_w_b = (1 - alpha) * self.lane_w_b + alpha * b_now
-                    self.lane_w_samples += 1
-            return
+            # Lebar jalur dipelajari HANYA di rentang u tempat kedua marka
+            # benar-benar teramati. Versi lama memakai dua titik (u=0.86 dan 1.0)
+            # yang pada footage asli sering berupa ekstrapolasi -> model lebar
+            # dengan titik nol di u=-0.58 (di luar gambar), lalu estimasi tikungan
+            # meleset ratusan piksel.
+            if not getattr(self, "_learned_this_frame", False):
+                self._learned_this_frame = self._learn_lane_width(w)
 
         if self.lane_w_a is None:
+            # Belum pernah lihat dua sisi        if self.lane_w_a is None:
             # Belum pernah lihat dua sisi: asumsikan jalur simetris terhadap
             # pusat gambar, dan lebarnya menyempit linier ke arah horizon.
             # Kalau asumsi ini meleset, sisi tebakan tetap ditandai "estimasi".
@@ -668,7 +697,13 @@ class LaneDetector:
             guess = 2.0 * half_hi
             if not (0.2 * w <= guess <= 0.9 * w):
                 return
-            # kemiringan wajar: lebar di y=0.62h sekitar 55% lebar di y=h
+            # Model lebar untuk sisi yang tidak pernah terlihat.
+            # CATATAN JUJUR: percobaan memakai cakrawala u=0.45 (a=1.82W, b=-0.82W)
+            # membuat galat sisi kanan di footage asli MEMBURUK (median 89 -> 123 px,
+            # diukur pada samples/mentah/mentah_1001183916.mp4), karena model yang
+            # lebih sempit di atas menarik tebakan makin ke dalam. Jadi nilai lama
+            # dipertahankan; lebar jalur di footage asli tetap TIDAK DIKETAHUI dan
+            # ditandai `width_assumed`.
             self.lane_w_a, self.lane_w_b = guess * 0.75, guess * 0.25
             self.lane_w_mirror = True
         elif self.lane_w_samples < 5 and not self.lane_w_mirror:
@@ -683,6 +718,90 @@ class LaneDetector:
         elif rd_fresh and self.left_draw is None:
             self.left_draw = est
             self.left_estimated = True
+
+    def _learn_lane_width(self, w: int) -> bool:
+        """Perbarui W(u) = a*u + b dari irisan rentang teramati kedua sisi."""
+        if self.left_coeff is None or self.right_coeff is None:
+            return False
+        if self.left_obs_u is None or self.right_obs_u is None:
+            return False
+        lo = max(self.left_obs_u[0], self.right_obs_u[0])
+        hi = min(self.left_obs_u[1], self.right_obs_u[1])
+        if hi - lo < 0.10:                     # irisan terlalu pendek -> jangan belajar
+            return False
+        us = np.linspace(lo, hi, 32)
+        widths = np.polyval(self.right_coeff, us) - np.polyval(self.left_coeff, us)
+        if not np.all(np.isfinite(widths)) or np.min(widths) <= 0.05 * w:
+            return False
+        try:
+            a_now, b_now = np.polyfit(us, widths, 1)
+        except Exception:
+            return False
+        if not (np.isfinite(a_now) and np.isfinite(b_now)) or abs(a_now) < 1e-6:
+            return False
+        u0 = -b_now / a_now                     # tempat lebar jalur menjadi nol
+        # cakrawala kamera dashcam wajar di 0.25-0.80 tinggi gambar. Nilai di luar
+        # itu berarti model lebarnya bohong -> tolak daripada dipakai.
+        if a_now <= 0 or not (0.25 <= u0 <= 0.80):
+            return False
+        if self.lane_w_a is None:
+            self.lane_w_a, self.lane_w_b = float(a_now), float(b_now)
+            self.lane_w_samples = 1
+            self.lane_w_mirror = False
+        else:
+            alpha = 0.12                        # lebar jalur sangat halus
+            self.lane_w_a = (1 - alpha) * self.lane_w_a + alpha * float(a_now)
+            self.lane_w_b = (1 - alpha) * self.lane_w_b + alpha * float(b_now)
+            self.lane_w_samples += 1
+        return True
+
+    def _extend_short_sides(self, h: int, w: int) -> None:
+        """Lengkapi bagian bawah kurva yang tidak teramati (terhalang benda).
+
+        Kalau marka kanan hanya terlihat sampai u=0.74 (terhalang truk), kurva
+        derajat 2 yang dipakai sampai u=1.0 melengkung ke arah yang salah —
+        terukur 189 px meleset. Dua batas jalur di jalan nyata hampir sejajar
+        (kelengkungan sama, hanya bergeser selebar jalur), jadi bagian yang
+        hilang lebih jujur dibangun dari sisi yang terlihat + W(u).
+        """
+        # Perluasan HANYA boleh memakai lebar jalur yang benar-benar terukur.
+        # Di footage asli lebar jalur sering masih asumsi cermin; memakainya untuk
+        # memperpanjang kurva ke bawah membuat galat sisi kanan MEMBURUK
+        # (terukur median 89 -> 193 px, samples/mentah/mentah_1001183916.mp4).
+        if (self.lane_w_a is None or self.lane_w_b is None
+                or self.lane_w_mirror or self.lane_w_samples < 3):
+            return
+        for side in ("L", "R"):
+            fresh = (self.left_coeff is not None and not self.left_stale) if side == "L" \
+                else (self.right_coeff is not None and not self.right_stale)
+            if not fresh:
+                continue
+            obs = self.left_obs_u if side == "L" else self.right_obs_u
+            other_obs = self.right_obs_u if side == "L" else self.left_obs_u
+            other = self.right_coeff if side == "L" else self.left_coeff
+            if obs is None or obs[1] >= 0.96 or other is None or other_obs is None:
+                continue
+            if other_obs[1] < obs[1] + 0.05:     # sisi lain juga tidak lebih baik
+                continue
+            base = self.left_coeff if side == "L" else self.right_coeff
+            us = np.linspace(min(obs[0], other_obs[0]), 1.0, 40)
+            own = np.polyval(base, us)
+            shifted = np.polyval(other, us) + (self.lane_w_a * us + self.lane_w_b) * \
+                (1.0 if side == "R" else -1.0)
+            xs = np.where(us <= obs[1], own, shifted)
+            deg = len(base) - 1
+            try:
+                new = np.asarray(np.polyfit(us, xs, deg), dtype=np.float64)
+            except Exception:
+                continue
+            if not np.all(np.isfinite(new)) or not self._plausible(new, side, max_slope=6.0):
+                continue
+            if side == "L":
+                self.left_coeff = new
+                self.left_extended = True
+            else:
+                self.right_coeff = new
+                self.right_extended = True
 
     def _width_at(self, y: float) -> Optional[float]:
         """Lebar jalur terukur (px) pada ketinggian y, dari kedua kurva yang terdeteksi."""

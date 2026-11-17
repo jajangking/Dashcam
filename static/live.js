@@ -247,6 +247,7 @@
         if (g.moving) extra += ` (${g.shift_m >= 0 ? '+' : ''}${g.shift_m} m)`;
       }
       if (g.drift_warning && !g.drifting) extra += ' · perkiraan jarak tempuh mulai melenceng';
+      if (g.width_assumed) extra += ' · lebar jalur diasumsikan, jarak bisa meleset ±20%';
     }
     hudStatus.textContent = (res.status || '') + extra;
     sLat.textContent = res.server_ms != null ? res.server_ms.toFixed(0) + ' ms' : '–';
@@ -299,6 +300,7 @@
         if (g.moving) extra += ` (${g.shift_m >= 0 ? '+' : ''}${g.shift_m} m)`;
       }
       if (g.drift_warning && !g.drifting) extra += ' · perkiraan jarak tempuh mulai melenceng';
+      if (g.width_assumed) extra += ' · lebar jalur diasumsikan, jarak bisa meleset ±20%';
     }
     hudStatus.textContent = (res.status || '') + extra;
     } else {

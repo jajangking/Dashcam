@@ -16,6 +16,7 @@ jadi bisa jalan di Termux/Android.
 - `templates/live.html`, `static/app.css`, `static/live.js` — UI mode live
 - `web_app.py` — antarmuka web lama (upload, progres, hasil, halaman uji)
 - `make_tests.py` — pembuat contoh uji sintetis (`samples/`)
+- `tests/` — test pytest (`pytest`, 44 test)
 - `AUDIT.md` — hasil audit kodebase (temuan + prioritas perbaikan)
 - `requirements.txt` — dependensi Python
 
@@ -96,15 +97,33 @@ Semua ada di `lane_v2.py` (`LaneDetector.__init__`):
 - `color_mask()` — ambang warna putih/kuning.
 
 ## Hasil uji
-Diukur ulang terhadap geometri asli (lihat `AUDIT.md` untuk rinciannya):
-- 9 dari 11 contoh sintetis: galat **< 1 px** (median 0.50 px).
-- **Tikungan kanan tajam justru meleset 24–52 px.** Penyebabnya pemilihan derajat
-  polinomial di `lane_v2.fit()` menurunkan marka kanan ke garis lurus ketika rentang
-  vertikalnya < 15 % tinggi gambar. Overlay tetap menulis "kualitas: kuat", jadi
-  kesalahannya tidak terlihat. **Belum diperbaiki.**
-- Goyangan video: 1.06–1.54 px/frame.
-- Frame yang isinya hanya noise **dilaporkan sebagai jalur terdeteksi** (kualitas 1.0).
-  **Belum diperbaiki.**
+
+Jalankan sendiri: `pip install -r requirements-dev.txt && pytest`
+
+Diukur terhadap geometri asli (`samples/` + `make_tests.road()`):
+
+| Kondisi | Hasil |
+|---|---|
+| Contoh sintetis normal (lurus, tikungan landai, putus, malam, pudar) | galat **< 1 px** (median 0.50 px) |
+| Estimasi sisi yang hilang | **galat maks < 1.2 px** (sebelumnya sampai 754 px) |
+| Frame noise / dinding terang | **ditolak** dengan alasan jelas (sebelumnya "jalur terdeteksi, kualitas kuat") |
+| Goyangan video | 1.06–1.54 px/frame |
+| Tikungan kanan tajam (`case_belok_240/360/480`) | **masih meleset 24–52 px** — belum diperbaiki, lihat di bawah |
+
+### Perbaikan yang sudah masuk
+- **Estimasi sisi hilang** sekarang memakai model perspektif: lebar jalur dipelajari
+  sebagai fungsi ketinggian (`W(u) = a·u + b`), bukan satu angka konstan. Dulu sisi
+  yang tak terlihat digeser sejajar sehingga makin ke atas makin melenceng.
+- **Penjaga "bukan gambar jalan"**: kalau >35 % area jalan berwarna putih/kuning, atau
+  piksel terang menyebar >14 px di sekitar garis, frame ditolak dan `info["rejected"]
+  berisi alasannya. UI menampilkan alasan itu, tidak lagi mengaku "kualitas: kuat".
+
+### Masih terbuka
+- **Tikungan kanan tajam meleset 24–52 px**: `lane_v2._fit()` menurunkan derajat
+  polinomial ke garis lurus saat rentang vertikal marka < 15 % tinggi gambar. Di
+  `case_belok_480` rentangnya tepat 15.7 %. Perbaikannya: pilih derajat berdasarkan
+  penurunan sisa galat, bukan ambang span.
+- 22 dari 30 fixture di `samples/` belum punya generator di `make_tests.py`.
 
 ## Pengembangan lanjut
 - Deteksi area jalan (drivable area) dengan model segmentasi ringan (ONNX).

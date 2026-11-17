@@ -31,6 +31,8 @@ class LaneDetector:
         max_jump_pct: float = 4.0,
         color_min_v: int = 145,
         color_max_s: int = 70,
+        max_mask_density: float = 0.35,
+        max_band_spread_px: float = 14.0,
     ):
         self.n_windows = n_windows
         self.margin = margin
@@ -41,6 +43,10 @@ class LaneDetector:
         self.max_jump_pct = max_jump_pct
         self.color_min_v = color_min_v
         self.color_max_s = color_max_s
+        # penjaga "apakah ini gambar jalan?" (lihat _sanity)
+        self.max_mask_density = max_mask_density
+        self.max_band_spread_px = max_band_spread_px
+        self.sanity_note = ""
 
         # koefisien selalu dalam koordinat ternormalisasi u = y / h
         # x(u) = c[0]*u^2 + c[1]*u + c[2]  (derajat 2) atau c[0]*u + c[1]
@@ -52,7 +58,13 @@ class LaneDetector:
         self.right_quality = 0.0
         self.left_span_pct = 0.0
         self.right_span_pct = 0.0
-        self.lane_w_bottom: Optional[float] = None
+        # Lebar jalur dipelajari sebagai fungsi posisi vertikal (bukan satu angka!).
+        # Karena perspektif, lebar jalur di layar menyempit ke arah horizon:
+        #   W(u) = w_a * u + w_b      dengan u = y / h
+        # Menyimpannya sebagai konstanta (perilaku lama) membuat sisi yang hilang
+        # ditebak ratusan piksel meleset di tikungan.
+        self.lane_w_a: Optional[float] = None
+        self.lane_w_b: Optional[float] = None
         self.lane_w_samples = 0
         self.lane_w_mirror = False
         self.left_estimated = False
@@ -461,11 +473,75 @@ class LaneDetector:
             return new
 
     # ---------- proses 1 frame ----------
+    def _sanity(self, mask: np.ndarray, roi: np.ndarray) -> Tuple[bool, str]:
+        """Periksa apakah masker masuk akal sebagai marka, sebelum fitting apa pun.
+
+        Dua penyebab salah deteksi paling sering tidak ada hubungannya dengan
+        fitting: gambar yang isinya bukan jalan sama sekali (noise, salju TV,
+        lantai bertekstur, hujan ekstrem). Di kondisi itu hampir seluruh ROI
+        berwarna "putih", dan metode apa pun akan menemukan "garis".
+        Lebih baik menolak dengan jujur daripada menggambar jalur palsu.
+        """
+        h, w = mask.shape[:2]
+        roi_area = float(cv2.contourArea(roi.astype(np.int32)))
+        if roi_area <= 0:
+            return True, ""
+        density = float((mask > 0).sum()) / roi_area
+        if density > self.max_mask_density:
+            return False, f"terlalu banyak piksel terang di area jalan ({density:.0%}) — gambar bukan jalan?"
+
+        # Pita di sekitar kurva harus RAMPING. Marka asli selebar belasan piksel;
+        # noise/tekstur menyebar puluhan piksel karena jendela pencarian ikut
+        # menggemuk. Ini penjaga kedua kalau kepadatan masih lolos.
+        ys, xs = np.nonzero(mask)
+        stds = []
+        for coeff in (self.left_draw, self.right_draw):
+            if coeff is None or len(ys) == 0:
+                continue
+            pred = np.polyval(coeff, ys / float(h))
+            keep = np.abs(xs - pred) <= 40
+            if keep.sum() < 80:
+                continue
+            yy, xx = ys[keep], xs[keep]
+            per_row = [float(np.std(xx[yy == y])) for y in np.unique(yy) if (yy == y).sum() >= 3]
+            if per_row:
+                stds.append(float(np.median(per_row)))
+        if stds and float(np.mean(stds)) > self.max_band_spread_px:
+            return False, "piksel terang menyebar terlalu lebar di sekitar garis — bukan marka"
+        return True, ""
+
     def process(self, frame: np.ndarray, debug_mask: bool = False) -> Tuple[np.ndarray, Dict]:
         h, w = frame.shape[:2]
         self.h, self.w = h, w
         roi = self.roi_vertices(h, w)
         mask = self.color_mask(frame, roi)
+
+        # --- penjaga: apakah ini gambar jalan yang wajar? ---
+        sane, why = self._sanity(mask, roi)
+        if not sane:
+            self.left_missing = self.max_missing + 1
+            self.right_missing = self.max_missing + 1
+            self.left_stale = self.left_coeff is not None
+            self.right_stale = self.right_coeff is not None
+            self.left_quality = 0.0
+            self.right_quality = 0.0
+            self.left_draw = None
+            self.right_draw = None
+            self.left_estimated = False
+            self.right_estimated = False
+            self.sanity_note = why
+            out = self.draw(frame, roi, mask if debug_mask else None)
+            return out, {
+                "left": False, "right": False,
+                "left_stale": self.left_stale, "right_stale": self.right_stale,
+                "left_estimated": False, "right_estimated": False,
+                "left_points": 0, "right_points": 0,
+                "left_quality": 0.0, "right_quality": 0.0,
+                "left_span_pct": 0.0, "right_span_pct": 0.0,
+                "offset_pct": None, "turn": None,
+                "rejected": why,
+            }
+        self.sanity_note = ""
 
         left_pts, right_pts = self._window_search(mask)
         dmap = cv2.distanceTransform((255 - mask).astype(np.uint8), cv2.DIST_L2, 3)
@@ -524,6 +600,7 @@ class LaneDetector:
             "right_span_pct": round(float(self.right_span_pct), 1),
             "offset_pct": self.center_offset(w, h),
             "turn": self.turn_label(w, h),
+            "rejected": "",
         }
         return out, info
 
@@ -544,52 +621,92 @@ class LaneDetector:
             return
 
         if ld_fresh and rd_fresh:
-            xl = self._x(self.left_coeff, h - 1)
-            xr = self._x(self.right_coeff, h - 1)
-            width = xr - xl
+            # Pelajari lebar jalur di DUA ketinggian, lalu modelkan sebagai garis
+            # lurus terhadap u (W = a*u + b). Titik acuan diambil agak ke atas
+            # (bukan di y=h-1) supaya tidak terpengaruh tepi gambar.
+            u_lo, u_hi = 0.86, 1.0
+            w_lo = self._width_at(u_lo * h)
+            w_hi = self._width_at(u_hi * h)
             if (
-                0.15 * w < width < 0.95 * w
+                w_lo is not None and w_hi is not None
+                and 0.08 * w < w_hi < 1.10 * w
+                and 0.05 * w < w_lo < 1.10 * w
                 and self.left_quality >= 0.55
                 and self.right_quality >= 0.55
             ):
-                if self.lane_w_bottom is None:
-                    self.lane_w_bottom = width
+                a_now = (w_hi - w_lo) / (u_hi - u_lo)
+                b_now = w_hi - a_now * u_hi
+                if self.lane_w_a is None:
+                    self.lane_w_a, self.lane_w_b = a_now, b_now
                     self.lane_w_samples = 1
                     self.lane_w_mirror = False
                 else:
-                    a = 0.12  # lebar jalur sangat halus
-                    self.lane_w_bottom = (1 - a) * self.lane_w_bottom + a * width
+                    alpha = 0.12  # lebar jalur sangat halus
+                    self.lane_w_a = (1 - alpha) * self.lane_w_a + alpha * a_now
+                    self.lane_w_b = (1 - alpha) * self.lane_w_b + alpha * b_now
                     self.lane_w_samples += 1
             return
 
-        if self.lane_w_bottom is None:
-            # belum pernah lihat dua sisi: asumsikan kamera di tengah jalur,
-            # hanya kalau sisi yang terlihat cukup kuat
+        if self.lane_w_a is None:
+            # Belum pernah lihat dua sisi: asumsikan jalur simetris terhadap
+            # pusat gambar, dan lebarnya menyempit linier ke arah horizon.
+            # Kalau asumsi ini meleset, sisi tebakan tetap ditandai "estimasi".
             if ld_fresh and self.left_quality >= 0.5:
                 xl = self._x(self.left_coeff, h - 1)
-                guess = 2.0 * (w / 2.0 - xl)
+                half_hi = w / 2.0 - xl
             elif rd_fresh and self.right_quality >= 0.5:
                 xr = self._x(self.right_coeff, h - 1)
-                guess = 2.0 * (xr - w / 2.0)
+                half_hi = xr - w / 2.0
             else:
                 return
+            guess = 2.0 * half_hi
             if not (0.2 * w <= guess <= 0.9 * w):
                 return
-            self.lane_w_bottom = guess
+            # kemiringan wajar: lebar di y=0.62h sekitar 55% lebar di y=h
+            self.lane_w_a, self.lane_w_b = guess * 0.75, guess * 0.25
             self.lane_w_mirror = True
         elif self.lane_w_samples < 5 and not self.lane_w_mirror:
             return
 
+        est = self._estimate_other_side(h, ld_fresh)
+        if est is None:
+            return
         if ld_fresh and self.right_draw is None:
-            est = np.array(self.left_coeff, dtype=np.float64)
-            est[-1] += self.lane_w_bottom
             self.right_draw = est
             self.right_estimated = True
         elif rd_fresh and self.left_draw is None:
-            est = np.array(self.right_coeff, dtype=np.float64)
-            est[-1] -= self.lane_w_bottom
             self.left_draw = est
             self.left_estimated = True
+
+    def _width_at(self, y: float) -> Optional[float]:
+        """Lebar jalur terukur (px) pada ketinggian y, dari kedua kurva yang terdeteksi."""
+        if self.left_coeff is None or self.right_coeff is None:
+            return None
+        return self._x(self.right_coeff, y) - self._x(self.left_coeff, y)
+
+    def _estimate_other_side(self, h: int, from_left: bool) -> Optional[np.ndarray]:
+        """Bangun kurva sisi yang hilang dari sisi yang terlihat + lebar jalur W(u).
+
+        Lebar jalur bergantung pada u, jadi tidak cukup menggeser koefisien
+        konstanta: kita evaluasi posisi di beberapa ketinggian, tambah/kurangi
+        W(u), lalu fitting ulang agar bentuknya tetap halus.
+        """
+        base = self.left_coeff if from_left else self.right_coeff
+        if base is None or self.lane_w_a is None or self.lane_w_b is None:
+            return None
+        deg = len(base) - 1
+        us = np.linspace(1.0, 0.58, 28)
+        width = self.lane_w_a * us + self.lane_w_b
+        if not np.all(np.isfinite(width)):
+            return None
+        xs = np.polyval(base, us) + (width if from_left else -width)
+        try:
+            est = np.polyfit(us, xs, deg)
+        except Exception:
+            return None
+        if not np.all(np.isfinite(est)):
+            return None
+        return np.asarray(est, dtype=np.float64)
 
     def center_offset(self, w: int, h: Optional[int] = None) -> Optional[float]:
         if self.left_draw is None or self.right_draw is None:

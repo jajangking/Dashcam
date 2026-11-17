@@ -7,6 +7,19 @@ Semua angka di bawah **hasil eksekusi nyata** di sandbox (Python 3.11, OpenCV 5.
 
 ---
 
+> **Pembaruan (branch `arena/9850f1b8-dashcam`)** — dua temuan di bawah sudah diperbaiki,
+> plus satu bug baru yang justru lebih parah dari semuanya:
+>
+> | Temuan | Status |
+> |---|---|
+> | §2.2 deteksi palsu pada frame noise | **Diperbaiki** — penjaga `_sanity()` menolak frame dengan alasan |
+> | *(baru)* estimasi sisi hilang meleset hingga **754 px** | **Diperbaiki** — lebar jalur kini model perspektif `W(u)=a·u+b`, galat < 1.2 px |
+> | §2.1 tikungan kanan tajam 24–52 px | **Belum** — butuh pemilihan derajat berbasis sisa galat |
+>
+> Bug estimasi tidak tertangkap audit pertama karena saya dulu hanya menguji gambar
+> statis, tidak pernah menyembunyikan satu marka untuk memaksa jalur estimasi dipakai.
+> Sekarang ada 44 test pytest yang mengunci keduanya (`tests/test_lane.py`).
+
 ## 1. Ringkasan
 
 Kabar baiknya dulu: **mesin deteksinya jauh lebih baik daripada kesan yang diberikan

@@ -162,6 +162,7 @@ def live_frame():
         "right_quality": info["right_quality"],
         "left_span_pct": info["left_span_pct"],
         "right_span_pct": info["right_span_pct"],
+        "rejected": info.get("rejected") or "",
         "server_ms": round((time.perf_counter() - t0) * 1000.0, 1),
     }
     resp = jsonify(payload)
@@ -171,6 +172,8 @@ def live_frame():
 
 
 def _title_text(info):
+    if info.get("rejected"):
+        return "Bukan gambar jalan — tidak dianalisis"
     ld, rd = info["left"], info["right"]
     le, re_ = info["left_estimated"], info["right_estimated"]
     if ld and rd and not le and not re_:
@@ -185,6 +188,8 @@ def _title_text(info):
 
 
 def _status_text(info):
+    if info.get("rejected"):
+        return info["rejected"]
     parts = []
     if info["offset_pct"] is not None:
         side = "kiri" if info["offset_pct"] < 0 else "kanan"

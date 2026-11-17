@@ -224,7 +224,7 @@
     hudTitle.textContent = res.title || '—';
     const okSides = (res.left ? 1 : 0) + (res.right ? 1 : 0);
     const weak = !res.left && !res.right;
-    hudTitle.className = 'pill ' + (weak ? 'bad' : (okSides === 2 && !res.left_estimated && !res.right_estimated ? 'ok' : 'warn'));
+    hudTitle.className = 'pill ' + (res.rejected ? 'bad' : (weak ? 'bad' : (okSides === 2 && !res.left_estimated && !res.right_estimated ? 'ok' : 'warn')));
     hudStatus.textContent = res.status || '';
     sLat.textContent = res.server_ms != null ? res.server_ms.toFixed(0) + ' ms' : '–';
     sSpan.textContent = `${res.left_span_pct ?? '–'}% / ${res.right_span_pct ?? '–'}%`;

@@ -16,7 +16,9 @@ jadi bisa jalan di Termux/Android.
 - `templates/live.html`, `static/app.css`, `static/live.js` — UI mode live
 - `web_app.py` — antarmuka web lama (upload, progres, hasil, halaman uji)
 - `make_tests.py` — pembuat contoh uji sintetis (`samples/`)
-- `tests/` — test pytest (`pytest`, 44 test)
+- `road_geometry.py` — piksel -> meter: jarak, posisi lateral, path jalur, deteksi pindah lajur
+- `objects.py` — kontrak objek (mobil/motor/orang) + estimasi jarak per objek
+- `tests/` — test pytest (`pytest`, 64 test)
 - `AUDIT.md` — hasil audit kodebase (temuan + prioritas perbaikan)
 - `requirements.txt` — dependensi Python
 
@@ -117,6 +119,42 @@ Diukur terhadap geometri asli (`samples/` + `make_tests.road()`):
 - **Penjaga "bukan gambar jalan"**: kalau >35 % area jalan berwarna putih/kuning, atau
   piksel terang menyebar >14 px di sekitar garis, frame ditolak dan `info["rejected"]
   berisi alasannya. UI menampilkan alasan itu, tidak lagi mengaku "kualitas: kuat".
+
+### Geometri jalan & pindah lajur (baru)
+`road_geometry.py` mengubah deteksi marka menjadi besaran metrik. Kuncinya lebar
+jalur di layar tumbuh linier terhadap baris gambar: `W(u) = a·u + b`. Detektor
+sudah mempelajarinya, jadi:
+
+- cakrawala = `-b·h/a` (terukur **galat 1.1 px** terhadap geometri sintetis),
+- skala `m/px` per baris → posisi lateral dalam meter,
+- jarak ke depan dari model pinhole: `Z = f_y·H/(y−y_horizon)`,
+- **path tengah jalur ke depan** digambar di UI (oranye putus-putus),
+- **pindah lajur**: offset lateral terhadap tengah jalur dibandingkan antar frame.
+
+Uji pindah lajur (5 skenario sintetis, 90 frame masing-masing):
+
+| Skenario | Perpindahan terukur | Klasifikasi |
+|---|---|---|
+| lurus | +0.00 m | di tengah jalur |
+| marka bergeser (kendaraan ke kiri) | −1.42 m | bergeser ke kiri ✓ |
+| marka bergeser (kendaraan ke kanan) | +1.42 m | bergeser ke kanan ✓ |
+| goyangan kamera | +0.14 m | di tengah jalur ✓ |
+| goyangan kuat | +0.20 m | di tengah jalur ✓ |
+
+**Penting:** percobaan pertama saya memakai flow optik dan **gagal** — goyangan
+kamera justru mendapat skor tertinggi (3.9) dibanding jalan yang benar-benar
+belok (1.1). Metode itu saya buang, bukan dipertahankan.
+
+Batasan estimasi jarak: jalan dianggap **datar**, lebar lajur diasumsikan 3.5 m,
+dan parameter kamera (tinggi 1.3 m, sudut pandang 55°) masih nilai tipikal —
+belum dikalibrasi ke kamera Anda. Angka jarak adalah **estimasi**, bukan sensor.
+
+### Objek (mobil/motor/orang)
+`objects.py` sudah berisi kontrak + geometri estimasi jarak per objek (diuji
+dengan kotak buatan: objek lebih tinggi di layar = lebih jauh, objek di lajur
+sebelah tidak dianggap "di depan kita"). **Belum ada model AI-nya**, karena
+bobot YOLO tidak bisa diunduh di lingkungan pengembangan ini. Lihat catatan di
+modul tersebut.
 
 ### Masih terbuka
 - **Tikungan kanan tajam meleset 24–52 px**: `lane_v2._fit()` menurunkan derajat

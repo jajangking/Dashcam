@@ -218,6 +218,18 @@
     };
     line(res.left, res.left_estimated, '#facc15');
     line(res.right, res.right_estimated, '#facc15');
+
+    // lintasan tengah jalur ke depan (oranye putus-putus)
+    const g = res.geometry;
+    if (g && g.path && g.path.length > 1) {
+      ctx.beginPath();
+      g.path.forEach((p, i) => { const [x, y] = toXY(p); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#fb923c';
+      ctx.setLineDash([4, 5]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
   }
 
   function updateHud(res) {
@@ -225,7 +237,14 @@
     const okSides = (res.left ? 1 : 0) + (res.right ? 1 : 0);
     const weak = !res.left && !res.right;
     hudTitle.className = 'pill ' + (res.rejected ? 'bad' : (weak ? 'bad' : (okSides === 2 && !res.left_estimated && !res.right_estimated ? 'ok' : 'warn')));
-    hudStatus.textContent = res.status || '';
+    const g = res.geometry;
+    let extra = '';
+    if (g && g.valid) {
+      if (g.lane_change && g.lane_change !== 'di tengah jalur') extra = ' · ' + g.lane_change;
+      if (g.moving) extra += ` (${g.shift_m >= 0 ? '+' : ''}${g.shift_m} m)`;
+      if (g.drift_warning) extra += ' · jarak tempuh perkiraan sudah melenceng';
+    }
+    hudStatus.textContent = (res.status || '') + extra;
     sLat.textContent = res.server_ms != null ? res.server_ms.toFixed(0) + ' ms' : '–';
     sSpan.textContent = `${res.left_span_pct ?? '–'}% / ${res.right_span_pct ?? '–'}%`;
   }
@@ -266,7 +285,14 @@
       draw({ ...res, w: res.w, h: res.h });
       videoResult.classList.add('hidden');
       hudTitle.textContent = res.title || '—';
-      hudStatus.textContent = res.status || '';
+      const g = res.geometry;
+    let extra = '';
+    if (g && g.valid) {
+      if (g.lane_change && g.lane_change !== 'di tengah jalur') extra = ' · ' + g.lane_change;
+      if (g.moving) extra += ` (${g.shift_m >= 0 ? '+' : ''}${g.shift_m} m)`;
+      if (g.drift_warning) extra += ' · jarak tempuh perkiraan sudah melenceng';
+    }
+    hudStatus.textContent = (res.status || '') + extra;
     } else {
       const job = res.job;
       pollJob(job);

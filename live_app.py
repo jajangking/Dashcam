@@ -32,6 +32,7 @@ from werkzeug.utils import secure_filename
 
 from lane_detect import process_video
 from lane_v2 import LaneDetector
+from road_geometry import RoadModel, Trajectory, centre_path_px, classify_lane_change
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
@@ -80,7 +81,8 @@ def _get_session(sid):
                 oldest = sorted(SESSIONS.items(), key=lambda kv: kv[1]["last_seen"])
                 for old_sid, _ in oldest[: len(SESSIONS) - MAX_SESSIONS + 1]:
                     SESSIONS.pop(old_sid, None)
-            sess = {"det": LaneDetector(), "last_seen": time.time(), "frames": 0}
+            sess = {"det": LaneDetector(), "last_seen": time.time(), "frames": 0,
+                    "traj": Trajectory(), "model": None, "lane_change": ""}
             SESSIONS[sid] = sess
         sess["last_seen"] = time.time()
         sess["frames"] += 1
@@ -146,6 +148,41 @@ def live_frame():
         return jsonify({"error": f"gagal memproses frame: {e}"}), 500
 
     h, w = frame.shape[:2]
+
+    # --- geometri jalan: jarak, lintasan ke depan, perpindahan jalur ---
+    geometry = None
+    if det.lane_w_a is not None and det.left_draw is not None and det.right_draw is not None:
+        model = RoadModel(det.lane_w_a, det.lane_w_b, h, w)
+        sess["model"] = model
+        if model.is_valid():
+            traj = sess["traj"]
+            traj.update(model,
+                        lambda y: det._x(det.left_draw, y),
+                        lambda y: det._x(det.right_draw, y))
+            label, shift = classify_lane_change(traj)
+            sess["lane_change"] = label
+            # lintasan tengah jalur ke depan, langsung dalam koordinat layar
+            path = [[round(x, 1), round(y, 1)] for x, y in
+                    centre_path_px(model,
+                                   lambda y: det._x(det.left_draw, y),
+                                   lambda y: det._x(det.right_draw, y))]
+            geometry = {
+                "valid": True,
+                "lane_change": label,
+                "shift_m": round(float(shift), 2),
+                "drift_warning": bool(traj.drift_warning),
+                "path": path,
+                "moving": float(traj.travelled_m) > 0.5,
+                "horizon_row": round(model.horizon_row(), 1),
+            }
+        else:
+            geometry = {"valid": False, "lane_change": "", "shift_m": 0.0,
+                        "drift_warning": False, "path": [], "moving": False}
+    else:
+        sess["traj"].reset()
+        geometry = {"valid": False, "lane_change": "", "shift_m": 0.0,
+                    "drift_warning": False, "path": [], "moving": False}
+
     payload = {
         "sid": sid,
         "w": w,
@@ -163,6 +200,7 @@ def live_frame():
         "left_span_pct": info["left_span_pct"],
         "right_span_pct": info["right_span_pct"],
         "rejected": info.get("rejected") or "",
+        "geometry": geometry,
         "server_ms": round((time.perf_counter() - t0) * 1000.0, 1),
     }
     resp = jsonify(payload)

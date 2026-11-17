@@ -111,3 +111,50 @@ def test_perluasan_tidak_merusak_jalan_lurus():
     assert not info["left_extended"]
     assert not info["right_extended"]
     assert abs(info["offset_pct"]) < 1.0
+
+
+# ---------- satu ukuran lebar jalur (permintaan pengguna) ----------
+def test_satu_ukuran_lebar_terukur_dari_dua_sisi():
+    """Kalau kedua marka terlihat, disimpan SATU angka lebar jalur."""
+    import cv2
+    from pathlib import Path
+    p = Path(__file__).resolve().parent.parent / "samples" / "mentah" / "mentah_1001183916.mp4"
+    if not p.exists():
+        pytest.skip("footage mentah tidak ada")
+    cap = cv2.VideoCapture(str(p))
+    det = LaneDetector()
+    n = 0
+    terukur = 0
+    while n < 150:
+        ok, f = cap.read()
+        if not ok:
+            break
+        n += 1
+        det.process(f)
+        if det.lane_w_m is not None:
+            terukur += 1
+    cap.release()
+    assert terukur / max(1, n) > 0.5, (
+        f"lebar satu angka hanya terukur {terukur}/{n} frame"
+    )
+    assert 0.08 * det.w < det.lane_w_m < 1.10 * det.w
+
+
+def test_sisi_hilang_memakai_satu_ukuran_lebar():
+    """Saat satu garis tidak terdeteksi, lebar memakai angka terukur sebelumnya."""
+    import cv2
+    f = load("case_clear.jpg")
+    h, w = f.shape[:2]
+    det = LaneDetector()
+    for _ in range(10):
+        det.process(f.copy())
+    assert det.lane_w_m is not None
+    lebar_sebelum = det.lane_w_m
+
+    hidden = f.copy()
+    cv2.rectangle(hidden, (int(w * 0.62), int(h * 0.5)), (w, h), (35, 35, 40), -1)
+    # `max_missing` = 8 frame: toleransi singkat saat marka tertutup sebentar
+    for _ in range(14):
+        _, info = det.process(hidden.copy())
+    assert info["right_estimated"]
+    assert det.lane_w_m == pytest.approx(lebar_sebelum, rel=0.25)

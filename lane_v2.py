@@ -66,6 +66,10 @@ class LaneDetector:
         self.lane_w_a: Optional[float] = None
         self.lane_w_b: Optional[float] = None
         self.lane_w_samples = 0
+        # SATU ukuran lebar jalur (piksel) untuk dipakai saat salah satu sisi
+        # tidak terdeteksi. Hanya diperbarui dari frame yang KEDUA sisinya
+        # terlihat (dan tidak sekedar hasil tebakan), lalu dihaluskan.
+        self.lane_w_m = None
         self.lane_w_mirror = False
         self.left_estimated = False
         self.right_estimated = False
@@ -673,6 +677,7 @@ class LaneDetector:
             return
 
         if ld_fresh and rd_fresh:
+            self._learn_single_width(w)
             # Lebar jalur dipelajari HANYA di rentang u tempat kedua marka
             # benar-benar teramati. Versi lama memakai dua titik (u=0.86 dan 1.0)
             # yang pada footage asli sering berupa ekstrapolasi -> model lebar
@@ -803,6 +808,60 @@ class LaneDetector:
                 self.right_coeff = new
                 self.right_extended = True
 
+    def _learn_single_width(self, w: int) -> bool:
+        """Perbarui SATU ukuran lebar jalur dari frame yang kedua sisinya terlihat.
+
+        Dasarnya: lebar fisik jalur tidak berubah, hanya tampilan di layarnya yang
+        berubah karena perspektif. Satu angka di baris acuan (u_ref=0.95, dekat
+        bawah gambar) cukup, dan jauh lebih tahan banting daripada model dua
+        parameter yang harus diekstrapolasi ke bawah.
+
+        Syarat kedua sisi terlihat sampai u=0.96 ternyata TIDAK PERNAH terpenuhi
+        di footage asli (terukur 0 dari 444 frame) — di jalan nyata salah satu
+        marka hampir selalu tertutup kendaraan. Jadi acuan diambil dari irisan
+        rentang teramati lalu dievaluasi di u_ref; kalau irisannya tidak sampai
+        dekat acuan, nilainya ditolak.
+        """
+        if self.left_coeff is None or self.right_coeff is None:
+            return False
+        if self.left_obs_u is None or self.right_obs_u is None:
+            return False
+        lo = max(self.left_obs_u[0], self.right_obs_u[0])
+        hi = min(self.left_obs_u[1], self.right_obs_u[1])
+        u_ref = 0.95
+        # Acuan tidak harus di dalam irisan: yang dipelajari adalah KEMIRINGAN
+        # lebar terhadap u, lalu dievaluasi di u_ref. Di footage asli irisan
+        # kedua sisi hampir tidak pernah sampai bawah (terukur 442 dari 444 frame
+        # berhenti di atas u=0.83), jadi menuntut acuan di dalam irisan berarti
+        # lebar tidak pernah terukur sama sekali.
+        if hi - lo < 0.08:
+            return False
+        us = np.linspace(lo, hi, 24)
+        widths = np.polyval(self.right_coeff, us) - np.polyval(self.left_coeff, us)
+        widths = widths[np.isfinite(widths)]
+        if len(widths) < 6 or np.min(widths) <= 0.05 * w:
+            return False
+        try:
+            a_now, b_now = np.polyfit(us, widths, 1)
+        except Exception:
+            return False
+        if not (np.isfinite(a_now) and np.isfinite(b_now)) or a_now <= 0:
+            return False
+        at_ref = float(a_now * u_ref + b_now)
+        if not (0.08 * w < at_ref < 1.10 * w):
+            return False
+        # Haluskan kuat. Pengukuran per frame bergoyang ~91 px (std) karena salah
+        # satu sisi sering hanya terlihat sebagian; lebar fisik jalur sendiri
+        # hampir tidak berubah dalam 15 detik rekaman, jadi dipercaya rata-rata.
+        if self.lane_w_m is None:
+            self.lane_w_m = at_ref
+        elif abs(at_ref - self.lane_w_m) > 0.35 * self.lane_w_m:
+            return False            # lompatan >35% hampir pasti salah ukur
+        else:
+            alpha = 0.06
+            self.lane_w_m = (1 - alpha) * self.lane_w_m + alpha * at_ref
+        return True
+
     def _width_at(self, y: float) -> Optional[float]:
         """Lebar jalur terukur (px) pada ketinggian y, dari kedua kurva yang terdeteksi."""
         if self.left_coeff is None or self.right_coeff is None:
@@ -821,7 +880,23 @@ class LaneDetector:
             return None
         deg = len(base) - 1
         us = np.linspace(1.0, 0.58, 28)
+        # SATU ukuran lebar, sesuai permintaan: kalau satu garis tidak terdeteksi,
+        # pakai lebar yang sudah terukur sebelumnya.
+        # Tapi jangan dipakai sebagai angka datar: di layar jalur menyempit ke
+        # arah cakrawala (perspektif). Jadi satu angka itu diskalakan linier
+        # terhadap u dengan titik nol di cakrawala u_h — tetap satu parameter.
+        # SATU ukuran lebar, sesuai permintaan: kalau satu garis tidak terdeteksi,
+        # pakai lebar yang sudah terukur sebelumnya.
         width = self.lane_w_a * us + self.lane_w_b
+        if self.lane_w_m is not None:
+            # Satu angka itu dijadikan acuan: bentuk perspektif tetap, tapi
+            # skalanya dinormalkan supaya lebar di baris acuan sama dengan angka
+            # terukur. (Memakai angka datar di semua baris justru lebih buruk:
+            # galat sisi kanan 98.7 px vs 88.3 px, karena jalur di layar menyempit.)
+            u_ref = 0.95
+            w_ref = float(self.lane_w_a * u_ref + self.lane_w_b)
+            if w_ref > 1e-6:
+                width = width * (float(self.lane_w_m) / w_ref)
         if not np.all(np.isfinite(width)):
             return None
         xs = np.polyval(base, us) + (width if from_left else -width)

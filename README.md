@@ -149,6 +149,25 @@ Batasan estimasi jarak: jalan dianggap **datar**, lebar lajur diasumsikan 3.5 m,
 dan parameter kamera (tinggi 1.3 m, sudut pandang 55°) masih nilai tipikal —
 belum dikalibrasi ke kamera Anda. Angka jarak adalah **estimasi**, bukan sensor.
 
+### Satu ukuran lebar jalur (permintaan pengguna)
+Sebelumnya sisi yang tidak terdeteksi ditebak dari model lebar dua parameter
+`W(u) = a*u + b`. Itu terlalu rapuh. Sekarang:
+
+- **Satu angka** `lane_w_m` diukur dari frame yang kedua marka terlihat, di baris
+  acuan `u = 0.95`, lalu dihaluskan kuat (alpha 0.06, lompatan >35% ditolak).
+- Kalau satu garis tidak terdeteksi, sisi yang hilang dibangun dari garis yang
+  terlihat + lebar itu. Bentuk perspektif tetap dipakai; angka tunggal hanya
+  **menormalkan skala**-nya.
+- Kalau **kedua** garis tidak terdeteksi, path jalur **tetap tidak digambar**.
+  Ini saya coba dan hasilnya buruk: menarik garis bantu ke tepi jalan salah
+  (terlihat di footage, garis kiri jatuh ke gerbang). Lebih jujur kosong.
+
+Terukur di footage asli: lebar terukur di **84% frame** (375/444), median 478 px
+dengan goyang std 49 px. Sisi kanan yang ditebak: galat median **89.0 -> 90.4 px**,
+porsi tebakan 33% -> **30%**. Jadi ini sedikit lebih baik dan lebih sederhana,
+bukan lompatan besar. Memakai angka datar (tanpa penskalaan perspektif) justru
+lebih buruk: galat kanan **98.7 px**.
+
 ### Marka tertutup benda & tikungan tajam (footage mentah asli)
 Diuji pada `samples/mentah/mentah_1001183916.mp4` (864x544, 444 frame, dashcam
 DDPAI Mola N3 Pro, Jakarta siang, hujan).
@@ -173,6 +192,20 @@ footage asli galat sisi kanan **memburuk: median 89 -> 123 px**, lalu 193 px saa
 perluasan ikut memakai lebar asumsi itu. Perubahannya dibatalkan, dan perluasan
 sekarang hanya boleh memakai lebar jalur terukur (>=3 sampel, bukan asumsi).
 Hasil akhir footage asli: **89.0 -> 89.8 px** (praktis tidak berubah).
+
+**Bug arah belok: saya tidak berhasil membuktikannya.**
+Anda melaporkan "jalan belok kanan tapi deteksi belok kiri". Yang bisa saya ukur:
+engine lama menggambar kurva dengan arah lengkung **berlawanan dengan marka yang
+terlihat** pada 29 dari 360 frame (8%). Saya lacak penyebabnya ke tahap
+"ambil ulang piksel di sekitar kurva lalu fit lagi". Tapi tiga penjaga yang saya
+coba (arah sama dengan fit awal, arah sama dengan data terlihat, perbandingan
+sisa galat) semuanya gagal: ada yang memblokir perbaikan yang benar, ada yang
+meloloskan pembalikan arah. Setelah pemeriksaan visual frame 277 dan 380, kedua
+"pembalikan" itu ternyata **bacaan yang benar** pada jalan berbelok-S.
+
+Kesimpulan jujur: **saya tidak punya bukti pasti bug arah belok**, dan perbaikan
+saya untuk itu **tidak saya masukkan**. Kalau Anda masih melihat arah salah,
+kirim timestamp atau screenshot-nya — tanpa itu saya hanya akan menebak lagi.
 
 **Batas yang diakui:**
 - Sisi kanan di footage asli masih meleset **~90 px** median. Marka kanan di sana

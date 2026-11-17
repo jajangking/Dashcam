@@ -3,10 +3,11 @@
 Kumpulan video **output** dari engine deteksi, supaya kekurangannya bisa dilihat
 langsung tanpa harus memproses ulang. Semua H.264 + `yuv420p` (bisa diputar di browser).
 
-> Penting: file di sini **belum** dibuat dengan commit terbaru. Lihat kolom
-> "Dibuat dengan" — dua video asli dan empat video sintetis masih dari engine
-> sebelum commit `06a4750` / `2300cfe`. Kalau mau yang mencerminkan kode sekarang,
-> minta regenerasi (lihat bagian bawah).
+> Penting: lihat kolom "Dibuat dengan". Dua video asli dan empat video sintetis
+> masih dari engine sebelum commit `06a4750` / `2300cfe`; `model_saja_...` dari
+> kode model sebelum penambahan mode ROAD. Hanya `road_cyan_1001183916.mp4`
+> yang dibuat dengan kode terbaru. Kalau mau yang lain disegarkan, regenerasi
+> seperti di bagian bawah.
 
 | File | Sumber | Durasi / frame | Dibuat dengan |
 |---|---|---|---|
@@ -18,6 +19,7 @@ langsung tanpa harus memproses ulang. Semua H.264 + `yuv420p` (bisa diputar di b
 | `sintetis_toll.mp4` | `samples/case_video_toll.mp4` | 5,0 s / 150 | engine v2.2 |
 | `hybrid_1001183916.mp4` | `samples/mentah/mentah_1001183916.mp4` | 14,8 s / 444 | klasik + fallback model UFLD TFLite (commit `e04a642` ke atas) |
 | `model_saja_1001183916.mp4` | `samples/mentah/mentah_1001183916.mp4` | 14,8 s / 444 | model UFLD di semua frame, kurva di-smoothing (cyan saja) |
+| `road_cyan_1001183916.mp4` | `samples/mentah/mentah_1001183916.mp4` | 14,8 s / 444 | klasik `lane_v2` + overlay cyan `ROAD` (commit baru) |
 
 `asli_v1_lama.mp4` vs `asli_v2.mp4` sengaja berpasangan: footage dan frame-nya sama,
 hanya engine-nya beda, jadi perbaikan bisa dibandingkan langsung.
@@ -33,6 +35,15 @@ marka tertutup orang/benda, marka sebelahnya disintesis sejajar memakai profil
 lebar terakhir (jalur diasumsikan muat satu mobil). Hasil 444 frame: **438/444**
 dua marka, goyakan lebar **1,74 px/frame**, 122 frame disintesis, 6 frame kosong.
 Sebelum logika satu sisi: 372/444 dan 2,36 px/frame.
+
+`road_cyan_1001183916.mp4` memakai footage dan frame yang sama, tapi deteksinya
+kembali ke `lane_v2` klasik. Garisnya cyan dengan label **ROAD**; marka yang
+hilang disintesis dari profil lebar klasik (**EST**), dan saat dua sisi hilang
+kurva dilanjutkan dengan kecepatan terakhir maksimal 45 frame (**HOLD**).
+Hasil 444 frame: 374/444 dua marka asli, 429/444 sisi kiri dan 421/444 sisi
+kanan tergambar, 15 frame kosong, lebar 434 px dengan goyakan **0,00 px/frame**
+(dan goyakan sisi bawah 1,00 px/frame). Ini yang paling stabil dan tidak butuh
+`models/ufld.tflite`.
 
 ## Yang sudah bagus (bisa diverifikasi di video)
 

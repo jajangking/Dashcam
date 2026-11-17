@@ -188,8 +188,10 @@ python lane_model_tflite.py --input samples/case_clear.jpg --output hasil_model.
 python lane_model_tflite.py --input samples/mentah/mentah_1001183916.mp4 --output hasil_model.mp4
 ```
 
-Bobot **tidak** di-commit (`.gitignore`). Engine klasik `lane_v2.py` tetap jadi
-default di web UI/mode LIVE; model dipilih lewat checkbox di web upload atau CLI.
+Bobot **tidak** di-commit (`.gitignore`). Web upload sekarang memakai pilihan
+mesin: Klasik kuning (default lama, tidak berubah), **Klasik + cyan (ROAD)**
+(disarankan, paling stabil), atau Model UFLD (MODEL). Mode LIVE tetap memakai
+engine klasik dan belum di-wire ke model.
 
 Hasil ukur di perangkat ini (jangan dipercaya tanpa data berlabel sendiri):
 
@@ -205,15 +207,41 @@ Kesimpulan jujurnya: model ini **lebih lambat dan lebih goyah di rekaman kita**
 (dilatih untuk empat lajur jalan Tiongkok, 800×288 — domain shift). Disimpan
 sebagai jalur percobaan dan perbandingan, bukan pengganti default.
 
-#### Mode model saja / cyan (`hybrid_video.py`)
-Hasil perbandingan menunjukkan garis model (cyan) lebih enak dilihat daripada
-garis kuning klasik, jadi sekarang **model dipakai di semua frame** dan garis
-klasik tidak digambar lagi. Jalankan:
+#### Mode ROAD — klasik + cyan (disarankan)
+Deteksi tetap memakai `lane_v2.py` (cepat, tidak butuh bobot 178 MB), tapi
+digambar seperti garis model: cyan + halo dengan label **ROAD**. Satu marka yang
+tertutup orang/benda disintesis memakai profil lebar jalur klasik (garis
+putus-putus + **EST**). Kalau dua sisi hilang sebentar, kurva terakhir dilanjutkan
+dengan kecepatan geser terakhir (maksimal 45 frame) dan ditandai **HOLD** —
+jadi tidak membeku di satu posisi.
 
 ```bash
-python hybrid_video.py --input samples/mentah/mentah_1001183916.mp4 \
-                       --output samples/hasil/model_saja_1001183916.mp4
+python hybrid_video.py --mode road \
+  --input samples/mentah/mentah_1001183916.mp4 \
+  --output samples/hasil/road_cyan_1001183916.mp4
 ```
+
+Di web upload, pilih **"Klasik + cyan — garis ROAD, paling stabil"**.
+
+Hasil footage penuh 444 frame: **374/444** frame dua marka asli, 429 frame sisi
+kiri dan 421 frame sisi kanan tergambar (termasuk estimasi/HOLD), **15 frame
+kosong**, lebar jalur 434 px, goyakan lebar **0,00 px/frame** dan goyakan sisi
+bawah **1,00 px/frame**. Artinya lebar jalur tidak berubah-ubah, tapi garis masih
+ikut bergeser halus mengikuti jalan. Bandingkan dengan mode MODEL: 438/444 dan
+1,74 px/frame. File contoh: `samples/hasil/road_cyan_1001183916.mp4`.
+
+#### Mode model saja / cyan (`hybrid_video.py`, opsional)
+Mode ini tetap ada untuk perbandingan. Garisnya cyan dengan label **MODEL**,
+semua frame diproses UFLD TFLite (lebih lambat, ±660 ms/frame di perangkat ini):
+
+```bash
+python hybrid_video.py --mode model \
+  --input samples/mentah/mentah_1001183916.mp4 \
+  --output samples/hasil/model_saja_1001183916.mp4
+```
+
+CLI tanpa `--mode` masih memakai MODEL (kompatibilitas dengan perintah lama);
+untuk mode baru wajib ditulis `--mode road`.
 
 Mode lama masih ada untuk perbandingan:
 `python hybrid_video.py --mode hybrid --input ... --output ...`
@@ -261,11 +289,12 @@ ternyata lebih stabil daripada membekukan dua garis.
 Catatan kalibrasi lama tetap berlaku: `max_stale` 20/30 frame membuat kurva
 terlalu lama membeku (goyakan 0,00), jadi dipertahankan 12 frame.
 
-Lewat web UI: buka `http://127.0.0.1:5001`, unggah video, lalu centang
-**"Pakai model UFLD saja — garis cyan, tanpa garis kuning klasik"**. Halaman job
-menampilkan baris "Model (cyan)", "Goyakan lebar jalur", "Kurva ditahan", dan
-"Marka disintesis".
+Lewat web UI: buka `http://127.0.0.1:5001`, unggah video, lalu pilih mesin
+**"Model UFLD — garis MODEL, lebih lambat"**. Halaman job menampilkan baris
+"Model (cyan)", "Goyakan lebar jalur", "Kurva ditahan", dan "Marka disintesis".
 Kalau `models/ufld.tflite` tidak ada, proses otomatis jatuh ke engine klasik.
+Untuk hasil yang lebih stabil dan jauh lebih cepat, pilih **ROAD** di dropdown
+yang sama.
 
 Contoh hasil: `samples/hasil/model_saja_1001183916.mp4`. Catatan jujur: model
 masih **lebih lambat** (~660 ms/frame) dan goyakannya masih di atas engine klasik

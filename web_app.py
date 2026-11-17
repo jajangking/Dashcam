@@ -42,6 +42,7 @@ INDEX_HTML = """
     input[type=file] { width: 100%; padding: 10px; background: #0b1220; color: #e2e8f0; border: 1px solid #334155; border-radius: 8px; }
     button { background: #2563eb; color: white; border: none; padding: 10px 16px; border-radius: 8px; cursor: pointer; font-size: 1rem; }
     button:hover { background: #1d4ed8; }
+    select { width: 100%; padding: 10px; background: #0b1220; color: #e2e8f0; border: 1px solid #334155; border-radius: 8px; }
     .muted { color: #94a3b8; font-size: .95rem; }
     .error { color: #fecaca; background: #7f1d1d; padding: 10px; border-radius: 8px; }
   </style>
@@ -53,10 +54,17 @@ INDEX_HTML = """
     {% if error %}<div class="error">{{ error }}</div>{% endif %}
     <form method="post" action="/process" enctype="multipart/form-data">
       <div class="row"><input type="file" name="file" accept="image/*,video/*" required></div>
-      <div class="row"><label><input type="checkbox" name="fallback_model" value="1"> Pakai model UFLD saja — garis cyan, tanpa garis kuning klasik (halus, tapi lebih lambat)</label></div>
+      <div class="row">
+        <label for="engine" class="muted">Mesin deteksi</label>
+        <select name="engine" id="engine">
+          <option value="klasik" selected>Klasik — garis kuning (default lama)</option>
+          <option value="road">Klasik + cyan — garis ROAD, paling stabil (disarankan)</option>
+          <option value="model">Model UFLD — garis MODEL, lebih lambat</option>
+        </select>
+      </div>
       <div class="row"><button type="submit">Proses</button></div>
     </form>
-    <p class="muted">Mode model butuh <code>models/ufld.tflite</code> (178 MB, tidak ikut di-repo). Kalau tidak ada, proses otomatis memakai engine klasik.</p>
+    <p class="muted">Mode <b>ROAD</b> memakai detektor klasik <code>lane_v2</code> dengan warna cyan. Mode <b>MODEL</b> butuh <code>models/ufld.tflite</code> (178 MB, tidak ikut di-repo); kalau tidak ada, proses otomatis memakai engine klasik.</p>
     <p class="muted"><a href="/tests">Lihat contoh uji (input vs hasil) →</a></p>
   </div>
 </body>
@@ -162,12 +170,17 @@ def _set(job_id, **kw):
             job.update(kw)
 
 
-def process_job(job_id, in_path, out_path, kind, orig_name, use_model=False):
+ENGINE_LABELS = {
+    "klasik": "klasik (kuning)",
+    "road": "klasik + cyan (ROAD)",
+    "model": "model UFLD (MODEL)",
+}
+
+
+def process_job(job_id, in_path, out_path, kind, orig_name, engine="klasik"):
     started = time.time()
     _set(job_id, status="running", started_at=started)
-    _log(job_id, f"Mulai memproses: {orig_name} ({kind})")
-    if use_model:
-        _log(job_id, "Diminta: model UFLD untuk semua frame (cyan tanpa klasik)")
+    _log(job_id, f"Mulai memproses: {orig_name} ({kind}) · {ENGINE_LABELS.get(engine, engine)}")
     try:
         if kind == "image":
             _log(job_id, "Membaca dan mendeteksi jalur pada gambar")
@@ -214,7 +227,17 @@ def process_job(job_id, in_path, out_path, kind, orig_name, use_model=False):
 
             _log(job_id, "Memulai deteksi jalur per-frame")
             stats = {}
-            if use_model:
+            if engine == "road":
+                from hybrid_video import process_video_road
+
+                process_video_road(
+                    str(in_path),
+                    str(out_path),
+                    progress_cb=cb,
+                    status_cb=lambda m: _log(job_id, m),
+                    stats_out=stats,
+                )
+            elif engine == "model":
                 try:
                     from hybrid_video import process_video_model
 
@@ -246,6 +269,16 @@ def process_job(job_id, in_path, out_path, kind, orig_name, use_model=False):
                     stats_out=stats,
                 )
             _log(job_id, "Output video selesai")
+            if stats.get("road_frames") is not None:
+                _log(
+                    job_id,
+                    f"ROAD dua marka {stats['road_frames']}/{stats['frames']} frame · "
+                    f"estimasi {stats.get('road_estimated', 0)} · "
+                    f"ditahan {stats.get('road_held', 0)} · "
+                    f"kosong {stats.get('road_failed', 0)} · "
+                    f"lebar {stats.get('road_width_px') or 0:.1f} px · "
+                    f"goyakan {stats.get('road_width_jitter_px') or 0:.2f} px/frame",
+                )
             if stats.get("model_frames") is not None:
                 _log(
                     job_id,
@@ -323,7 +356,14 @@ def process():
 
     out_path = RESULT_DIR / out_name
     f.save(in_path)
-    use_model = bool(request.form.get("fallback_model")) and kind == "video"
+    engine = (request.form.get("engine") or "").strip().lower()
+    if not engine:
+        # kompatibilitas dengan form lama yang memakai checkbox fallback_model
+        engine = "model" if request.form.get("fallback_model") else "klasik"
+    if kind == "image":
+        engine = "klasik"
+    if engine not in ENGINE_LABELS:
+        return redirect(url_for("index", error=f"Mesin tidak dikenal: {engine}"))
 
     job = {
         "id": job_id,
@@ -331,7 +371,7 @@ def process():
         "stage": "Menunggu antrean",
         "filename": name,
         "kind": kind,
-        "use_model": use_model,
+        "engine": engine,
         "result": out_name,
         "percent": 0.0,
         "processed_frames": 0,
@@ -349,7 +389,7 @@ def process():
 
     t = threading.Thread(
         target=process_job,
-        args=(job_id, in_path, out_path, kind, name, use_model),
+        args=(job_id, in_path, out_path, kind, name, engine),
         daemon=True,
     )
     t.start()
@@ -418,6 +458,24 @@ def job_page(job_id):
             q = st.get(key + "_quality")
             if q is not None:
                 stats_rows.append((f"Kualitas {label}", f"{float(q):.2f}"))
+        if "road_frames" in st:
+            stats_rows.append(
+                (
+                    "ROAD (klasik cyan)",
+                    f"{int(st['road_frames'])}/{int(st.get('frames') or 0)} frame · "
+                    f"{int(st.get('road_failed', 0))} kosong",
+                )
+            )
+            wj = st.get("road_width_jitter_px")
+            if wj is not None:
+                stats_rows.append(("Goyakan lebar jalur", _px(wj)))
+            stats_rows.append(
+                (
+                    "Sisi diperkirakan",
+                    f"{int(st.get('road_estimated', 0))} frame estimasi · "
+                    f"{int(st.get('road_held', 0))} frame ditahan",
+                )
+            )
         if "model_frames" in st:
             stats_rows.append(
                 (

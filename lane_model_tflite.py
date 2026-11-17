@@ -4,8 +4,8 @@
 Berkas ini sengaja terpisah dari `lane_model.py` (jalur ONNX yang dipakai
 `live_app.py`) supaya tidak mengubah perilaku modul yang sudah ada.
 
-Model: Ultra-Fast-Lane-Detection (ResNet18, CULane) — 178 MB, input [1,288,800,3]
-RGB NHWC, output [1,201,18,4] = (grid+1, row anchors, 4 lajur).
+Model: Ultra-Fast-Lane-Detection (ResNet18, CULane) — 178 MB, input [1,3,288,800]
+RGB NCHW, output [1,201,18,4] = (grid+1, row anchors, 4 lajur).
 Sumber & lisensi: https://huggingface.co/litert-community/Ultra-Fast-Lane-Detection-LiteRT
 
 Bobot TIDAK ikut di-commit (lihat .gitignore). Unduh sendiri:
@@ -49,11 +49,27 @@ GRID = 200
 MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
+# Kurva selalu di-sampling pada grid u=y/h yang tetap supaya bisa di-rata-rata
+# antarframe. Tanpa grid tetap, panjang/posisi titik berubah tiap frame.
+CURVE_US = np.linspace(0.45, 1.0, 24, dtype=np.float32)
+
 
 class ModelLaneDetector:
     """Pembungkus inference TFLite yang menghasilkan dua kurva tepi jalur."""
 
-    def __init__(self, model_path: Path = MODEL_DEFAULT, threads: int = 2):
+    def __init__(
+        self,
+        model_path: Path = MODEL_DEFAULT,
+        threads: int = 2,
+        smooth: bool = True,
+        alpha: float = 0.35,
+        max_stale: int = 8,
+    ):
+        """`smooth` meratakan kurva antarframe; `alpha` = bobot frame baru.
+
+        alpha kecil = lebih stabil tapi lebih lambat bereaksi. max_stale = berapa
+        frame kurva lama dipakai saat model gagal sebelum dianggap hilang.
+        """
         if not Path(model_path).exists():
             raise FileNotFoundError(
                 f"bobot {model_path} tidak ada. Unduh dulu (lihat docstring lane_model_tflite.py)."
@@ -67,7 +83,18 @@ class ModelLaneDetector:
         self.interpreter.allocate_tensors()
         self.in_detail = self.interpreter.get_input_details()[0]
         self.out_detail = self.interpreter.get_output_details()[0]
+        self.smooth = smooth
+        self.alpha = float(alpha)
+        self.max_stale = int(max_stale)
+        self._prev_x: Optional[Tuple[np.ndarray, np.ndarray]] = None
         self.prev: Optional[Tuple[np.ndarray, np.ndarray]] = None
+        self._stale = 0
+
+    def reset(self) -> None:
+        """Lupakan riwayat (pakai saat memulai video/segmen baru)."""
+        self._prev_x = None
+        self.prev = None
+        self._stale = 0
 
     def describe(self) -> str:
         return (
@@ -130,8 +157,36 @@ class ModelLaneDetector:
 
         pair = self._pick_pair(self._decode(out, w, h), w)
         if pair is None:
-            return self.prev if self.prev is not None else (None, None)
-        self.prev = (self._fit(pair[0], h), self._fit(pair[1], h))
+            if self.prev is None:
+                return (None, None)
+            self._stale += 1
+            if self._stale > self.max_stale:
+                self.reset()
+                return (None, None)
+            return self.prev
+
+        raw_l, raw_r = self._fit(pair[0], h), self._fit(pair[1], h)
+        if (
+            self.smooth
+            and self._prev_x is not None
+            and len(raw_l) == len(self._prev_x[0])
+            and len(raw_r) == len(self._prev_x[1])
+        ):
+            # Lonjakan besar di bawah gambar biasanya salah deteksi, bukan belokan.
+            # Jangan tarik kurva lama ke posisi itu; mulai dari awal lagi.
+            jump = max(
+                abs(raw_l[-1, 0] - self._prev_x[0][-1]),
+                abs(raw_r[-1, 0] - self._prev_x[1][-1]),
+            )
+            if jump < 0.15 * w:
+                a = self.alpha
+                raw_l = raw_l.copy()
+                raw_r = raw_r.copy()
+                raw_l[:, 0] = a * raw_l[:, 0] + (1 - a) * self._prev_x[0]
+                raw_r[:, 0] = a * raw_r[:, 0] + (1 - a) * self._prev_x[1]
+        self._prev_x = (raw_l[:, 0].copy(), raw_r[:, 0].copy())
+        self.prev = (raw_l, raw_r)
+        self._stale = 0
         return self.prev
 
     @staticmethod
@@ -144,23 +199,25 @@ class ModelLaneDetector:
             return pts
         deg = 2 if len(u) >= 6 else 1
         c = np.polyfit(u, x, deg)
-        us = np.linspace(u.min(), u.max(), 24)
-        return np.stack([np.polyval(c, us), us * h], axis=1)
+        # Jangan extrapolasi polinomial di luar anchor: bisa meledak (x > lebar
+        # gambar). Di tepi, pakai nilai anchor terdekat.
+        us = np.clip(CURVE_US, u.min(), u.max())
+        return np.stack([np.polyval(c, us), CURVE_US * h], axis=1)
 
 
 def draw(frame: np.ndarray, left: Optional[np.ndarray], right: Optional[np.ndarray]) -> np.ndarray:
+    """Satu-satunya gaya garis model: cyan, anti-alias, tanpa garis klasik."""
     out = frame.copy()
     for pts in (left, right):
         if pts is None or len(pts) < 2:
             continue
         p = np.round(pts).astype(np.int32).reshape(-1, 1, 2)
-        cv2.polylines(out, [p], False, (0, 255, 0), 3, cv2.LINE_AA)
+        cv2.polylines(out, [p], False, (140, 190, 190), 7, cv2.LINE_AA)   # halo
+        cv2.polylines(out, [p], False, (255, 255, 0), 3, cv2.LINE_AA)     # cyan
     if left is not None and right is not None and len(left) and len(right):
-        cv2.line(
-            out,
-            tuple(np.round(left[-1]).astype(int)),
-            tuple(np.round(right[-1]).astype(int)),
-            (0, 0, 255), 2,
+        cv2.putText(
+            out, "MODEL", (14, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.75,
+            (255, 255, 0), 2, cv2.LINE_AA,
         )
     return out
 

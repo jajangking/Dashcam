@@ -17,6 +17,7 @@ langsung tanpa harus memproses ulang. Semua H.264 + `yuv420p` (bisa diputar di b
 | `sintetis_belok.mp4` | `samples/case_video_belok.mp4` | 4,0 s / 120 | engine v2.2 |
 | `sintetis_toll.mp4` | `samples/case_video_toll.mp4` | 5,0 s / 150 | engine v2.2 |
 | `hybrid_1001183916.mp4` | `samples/mentah/mentah_1001183916.mp4` | 14,8 s / 444 | klasik + fallback model UFLD TFLite (commit `e04a642` ke atas) |
+| `model_saja_1001183916.mp4` | `samples/mentah/mentah_1001183916.mp4` | 14,8 s / 444 | model UFLD di semua frame, kurva di-smoothing (cyan saja) |
 
 `asli_v1_lama.mp4` vs `asli_v2.mp4` sengaja berpasangan: footage dan frame-nya sama,
 hanya engine-nya beda, jadi perbaikan bisa dibandingkan langsung.
@@ -25,6 +26,11 @@ hanya engine-nya beda, jadi perbaikan bisa dibandingkan langsung.
 **cyan** adalah hasil model UFLD yang dipanggil saat engine klasik kehilangan
 kedua marka. Label "MODEL" muncul di frame tersebut. Ini bukti bahwa model
 menolong 65 dari 70 frame yang kosong, bukan pengganti seluruh deteksi.
+
+`model_saja_1001183916.mp4` memakai footage yang sama, tapi **garis kuning klasik
+dihilangkan** — semua frame memakai model cyan. Kurvanya sudah di-smoothing
+(goyakan lebar turun dari 20,21 menjadi 7,04 px/frame pada clip uji 120 frame),
+jadi tidak ada lagi pergantian warna/posisi mendadak antar-engine.
 
 ## Yang sudah bagus (bisa diverifikasi di video)
 

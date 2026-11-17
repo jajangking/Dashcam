@@ -188,8 +188,8 @@ python lane_model_tflite.py --input samples/case_clear.jpg --output hasil_model.
 python lane_model_tflite.py --input samples/mentah/mentah_1001183916.mp4 --output hasil_model.mp4
 ```
 
-Bobot **tidak** di-commit (`.gitignore`). Model dipakai secara opsional lewat CLI;
-`lane_v2.py`, web UI, dan mode LIVE tetap memakai engine klasik.
+Bobot **tidak** di-commit (`.gitignore`). Engine klasik `lane_v2.py` tetap jadi
+default di web UI/mode LIVE; model dipilih lewat checkbox di web upload atau CLI.
 
 Hasil ukur di perangkat ini (jangan dipercaya tanpa data berlabel sendiri):
 
@@ -205,30 +205,37 @@ Kesimpulan jujurnya: model ini **lebih lambat dan lebih goyah di rekaman kita**
 (dilatih untuk empat lajur jalan Tiongkok, 800×288 — domain shift). Disimpan
 sebagai jalur percobaan dan perbandingan, bukan pengganti default.
 
-#### Fallback saat deteksi hilang total (`hybrid_video.py`)
-Model berguna justru untuk kasus yang gagal di `README.md` bagian "orang melintas
-detik ke-2" — 62/444 frame tanpa deteksi apa pun. Jalankan:
+#### Mode model saja / cyan (`hybrid_video.py`)
+Hasil perbandingan menunjukkan garis model (cyan) lebih enak dilihat daripada
+garis kuning klasik, jadi sekarang **model dipakai di semua frame** dan garis
+klasik tidak digambar lagi. Jalankan:
 
 ```bash
 python hybrid_video.py --input samples/mentah/mentah_1001183916.mp4 \
-                       --output results/hybrid_1001183916.mp4
+                       --output samples/hasil/model_saja_1001183916.mp4
 ```
 
-Engine klasik tetap dipakai di semua frame; model hanya dipanggil kalau dua sisi
-hilang, dan garisnya digambar **cyan** berlabel "MODEL". Diukur pada footage asli:
+Mode lama masih ada untuk perbandingan:
+`python hybrid_video.py --mode hybrid --input ... --output ...`
+(klasik di semua frame + cyan hanya saat dua marka hilang).
 
-| | Klasik saja | Klasik + fallback model |
+Kurva di-rata-rata antarframe (`alpha=0.35`) dan lonjakan > 15% lebar gambar
+ditolak sebagai salah deteksi. Diukur pada clip 120 frame dari footage asli:
+
+| | Model mentah | Model sudah di-smoothing |
 |---|---|---|
-| dua marka tergambar | 374/444 (84%) | **439/444 (99%)** |
-| frame tetap kosong | 70 | 5 |
+| goyakan lebar jalur | 20,21 px/frame | **7,04 px/frame** |
+| goyakan tepi kanan | 20,14 px/frame | **7,56 px/frame** |
+| dua marka | 92/120 | 92/120 |
 
-Lewat web UI juga bisa: buka `http://127.0.0.1:5001`, unggah video, lalu centang
-**"Pakai model UFLD untuk frame yang kehilangan kedua marka"**. Halaman job
-menampilkan baris "Ditolong model" dan log `Model menolong N frame`. Kalau
+Lewat web UI: buka `http://127.0.0.1:5001`, unggah video, lalu centang
+**"Pakai model UFLD saja — garis cyan, tanpa garis kuning klasik"**. Halaman job
+menampilkan baris "Model (cyan)" dan "Goyakan lebar jalur". Kalau
 `models/ufld.tflite` tidak ada, proses otomatis jatuh ke engine klasik.
 
-Contoh hasil: `samples/hasil/hybrid_1001183916.mp4`. Catatan: garis model dan
-garis klasik bisa meloncat ±8–10 px di titik pergantian — ini belum di-smoothing.
+Contoh hasil: `samples/hasil/model_saja_1001183916.mp4`. Catatan jujur: model
+masih **lebih lambat** (~660 ms/frame) dan goyakannya masih di atas engine klasik
+(0,3 px/frame), tapi tidak ada lagi loncatan warna di tengah video.
 
 ### Referensi & open-source
 Riset lengkap ada di **[REFERENSI.md](REFERENSI.md)**. Ringkasnya:

@@ -53,10 +53,10 @@ INDEX_HTML = """
     {% if error %}<div class="error">{{ error }}</div>{% endif %}
     <form method="post" action="/process" enctype="multipart/form-data">
       <div class="row"><input type="file" name="file" accept="image/*,video/*" required></div>
-      <div class="row"><label><input type="checkbox" name="fallback_model" value="1"> Pakai model UFLD untuk frame yang kehilangan kedua marka (garis cyan)</label></div>
+      <div class="row"><label><input type="checkbox" name="fallback_model" value="1"> Pakai model UFLD saja — garis cyan, tanpa garis kuning klasik (halus, tapi lebih lambat)</label></div>
       <div class="row"><button type="submit">Proses</button></div>
     </form>
-    <p class="muted">Fallback model butuh <code>models/ufld.tflite</code> (178 MB, tidak ikut di-repo). Kalau tidak ada, proses otomatis memakai engine klasik.</p>
+    <p class="muted">Mode model butuh <code>models/ufld.tflite</code> (178 MB, tidak ikut di-repo). Kalau tidak ada, proses otomatis memakai engine klasik.</p>
     <p class="muted"><a href="/tests">Lihat contoh uji (input vs hasil) →</a></p>
   </div>
 </body>
@@ -167,7 +167,7 @@ def process_job(job_id, in_path, out_path, kind, orig_name, use_model=False):
     _set(job_id, status="running", started_at=started)
     _log(job_id, f"Mulai memproses: {orig_name} ({kind})")
     if use_model:
-        _log(job_id, "Diminta: fallback model UFLD untuk frame tanpa deteksi")
+        _log(job_id, "Diminta: model UFLD untuk semua frame (cyan tanpa klasik)")
     try:
         if kind == "image":
             _log(job_id, "Membaca dan mendeteksi jalur pada gambar")
@@ -216,9 +216,9 @@ def process_job(job_id, in_path, out_path, kind, orig_name, use_model=False):
             stats = {}
             if use_model:
                 try:
-                    from hybrid_video import process_video_hybrid
+                    from hybrid_video import process_video_model
 
-                    process_video_hybrid(
+                    process_video_model(
                         str(in_path),
                         str(out_path),
                         progress_cb=cb,
@@ -226,7 +226,7 @@ def process_job(job_id, in_path, out_path, kind, orig_name, use_model=False):
                         stats_out=stats,
                     )
                 except Exception as exc:
-                    _log(job_id, f"Fallback model gagal ({exc}); pakai engine klasik")
+                    _log(job_id, f"Mode model gagal ({exc}); pakai engine klasik")
                     stats = {}
                     process_video(
                         str(in_path),
@@ -246,11 +246,12 @@ def process_job(job_id, in_path, out_path, kind, orig_name, use_model=False):
                     stats_out=stats,
                 )
             _log(job_id, "Output video selesai")
-            if stats.get("model_rescued"):
+            if stats.get("model_frames") is not None:
                 _log(
                     job_id,
-                    f"Model menolong {stats['model_rescued']} frame "
-                    f"({stats.get('model_failed', 0)} tetap kosong)",
+                    f"Model terdeteksi {stats['model_frames']}/{stats['frames']} frame "
+                    f"· {stats.get('model_failed', 0)} kosong · "
+                    f"goyakan lebar {stats.get('model_width_jitter_px') or 0:.2f} px/frame",
                 )
             if stats:
                 _set(job_id, stats=stats)
@@ -415,14 +416,17 @@ def job_page(job_id):
             q = st.get(key + "_quality")
             if q is not None:
                 stats_rows.append((f"Kualitas {label}", f"{float(q):.2f}"))
-        if "model_rescued" in st:
+        if "model_frames" in st:
             stats_rows.append(
                 (
-                    "Ditolong model",
-                    f"{int(st['model_rescued'])} frame (cyan) · "
-                    f"{int(st.get('model_failed') or 0)} tetap kosong",
+                    "Model (cyan)",
+                    f"{int(st['model_frames'])}/{int(st.get('frames') or 0)} frame · "
+                    f"{int(st.get('model_failed') or 0)} kosong",
                 )
             )
+            wj = st.get("model_width_jitter_px")
+            if wj is not None:
+                stats_rows.append(("Goyakan lebar jalur", _px(wj)))
 
     return render_template_string(
         JOB_HTML,

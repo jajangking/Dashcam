@@ -57,7 +57,7 @@ INDEX_HTML = """
       <div class="row">
         <label for="engine" class="muted">Mesin deteksi</label>
         <select name="engine" id="engine">
-          <option value="klasik" selected>Klasik — garis kuning (default lama)</option>
+          <option value="klasik" selected>Klasik — garis kuning + area jalan (default)</option>
           <option value="road">Klasik + cyan — garis ROAD, paling stabil (disarankan)</option>
           <option value="model">Model UFLD — garis MODEL, lebih lambat</option>
         </select>
@@ -459,6 +459,13 @@ def job_page(job_id):
             q = st.get(key + "_quality")
             if q is not None:
                 stats_rows.append((f"Kualitas {label}", f"{float(q):.2f}"))
+        if "road_area_dynamic" in st and "road_frames" not in st:
+            stats_rows.append(
+                (
+                    "Area jalan",
+                    f"{int(st.get('road_area_dynamic', 0))} frame koridor dinamis",
+                )
+            )
         if "road_frames" in st:
             stats_rows.append(
                 (

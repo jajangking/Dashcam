@@ -5,9 +5,9 @@ langsung tanpa harus memproses ulang. Semua H.264 + `yuv420p` (bisa diputar di b
 
 > Penting: lihat kolom "Dibuat dengan". Dua video asli dan empat video sintetis
 > masih dari engine sebelum commit `06a4750` / `2300cfe`; `model_saja_...` dari
-> kode model sebelum penambahan mode ROAD. Hanya `road_cyan_1001183916.mp4`
-> yang dibuat dengan kode terbaru. Kalau mau yang lain disegarkan, regenerasi
-> seperti di bagian bawah.
+> kode model sebelum penambahan mode ROAD. `road_cyan_1001183916.mp4` dan
+> `klasik_area_1001183916.mp4` dibuat dengan kode terbaru. Kalau mau yang lain
+> disegarkan, regenerasi seperti di bagian bawah.
 
 | File | Sumber | Durasi / frame | Dibuat dengan |
 |---|---|---|---|
@@ -19,7 +19,8 @@ langsung tanpa harus memproses ulang. Semua H.264 + `yuv420p` (bisa diputar di b
 | `sintetis_toll.mp4` | `samples/case_video_toll.mp4` | 5,0 s / 150 | engine v2.2 |
 | `hybrid_1001183916.mp4` | `samples/mentah/mentah_1001183916.mp4` | 14,8 s / 444 | klasik + fallback model UFLD TFLite (commit `e04a642` ke atas) |
 | `model_saja_1001183916.mp4` | `samples/mentah/mentah_1001183916.mp4` | 14,8 s / 444 | model UFLD di semua frame, kurva di-smoothing (cyan saja) |
-| `road_cyan_1001183916.mp4` | `samples/mentah/mentah_1001183916.mp4` | 14,8 s / 444 | klasik `lane_v2` + overlay cyan `ROAD` (commit baru) |
+| `road_cyan_1001183916.mp4` | `samples/mentah/mentah_1001183916.mp4` | 14,8 s / 444 | klasik `lane_v2` + overlay cyan `ROAD` + area jalan |
+| `klasik_area_1001183916.mp4` | `samples/mentah/mentah_1001183916.mp4` | 14,8 s / 444 | klasik kuning `lane_detect` + area jalan (commit baru) |
 
 `asli_v1_lama.mp4` vs `asli_v2.mp4` sengaja berpasangan: footage dan frame-nya sama,
 hanya engine-nya beda, jadi perbaikan bisa dibandingkan langsung.
@@ -46,6 +47,12 @@ Hasil 444 frame: 377/444 dua marka asli, 432/444 sisi kiri dan 424/444 sisi
 kanan tergambar, 12 frame kosong, koridor dinamis 383 frame, lebar 442 px dengan
 goyakan **0,00 px/frame** (dan goyakan sisi bawah 1,00 px/frame). Ini yang paling
 stabil dan tidak butuh `models/ufld.tflite`.
+
+`klasik_area_1001183916.mp4` memakai footage yang sama dengan tampilan kuning
+klasik, tapi sekarang pencarian markanya sudah dibatasi ke koridor area jalan.
+Hasil 444 frame: 385/444 sisi kiri, 377/444 sisi kanan, estimasi kanan turun
+dari 323 (tanpa masker) menjadi **222 frame**, goyakan kiri 0,19 px/frame dan
+kanan 0,00 px/frame. Ini contoh untuk mode "Klasik" yang jadi default di web.
 
 ## Yang sudah bagus (bisa diverifikasi di video)
 

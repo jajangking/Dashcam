@@ -189,9 +189,9 @@ python lane_model_tflite.py --input samples/mentah/mentah_1001183916.mp4 --outpu
 ```
 
 Bobot **tidak** di-commit (`.gitignore`). Web upload sekarang memakai pilihan
-mesin: Klasik kuning (default lama, tidak berubah), **Klasik + cyan (ROAD)**
-(disarankan, paling stabil), atau Model UFLD (MODEL). Mode LIVE tetap memakai
-engine klasik dan belum di-wire ke model.
+mesin: Klasik kuning (default, sekarang **juga memakai masker area jalan**),
+**Klasik + cyan (ROAD)** (disarankan, paling stabil), atau Model UFLD (MODEL).
+Mode LIVE tetap memakai engine klasik dan belum di-wire ke model.
 
 Hasil ukur di perangkat ini (jangan dipercaya tanpa data berlabel sendiri):
 
@@ -206,6 +206,14 @@ Hasil ukur di perangkat ini (jangan dipercaya tanpa data berlabel sendiri):
 Kesimpulan jujurnya: model ini **lebih lambat dan lebih goyah di rekaman kita**
 (dilatih untuk empat lajur jalan Tiongkok, 800×288 — domain shift). Disimpan
 sebagai jalur percobaan dan perbandingan, bukan pengganti default.
+
+#### Mode klasik kuning (default)
+Masker area jalan sekarang aktif juga di `lane_detect.py` (CLI/web mode
+"Klasik"). Cara kerja dan alasannya sama seperti di ROAD di bawah: pencarian
+dibatasi ke koridor kurva terpercaya frame sebelumnya. Pada footage 444 frame:
+385/444 sisi kiri, 377/444 sisi kanan, estimasi kanan turun dari 323 ke
+**222 frame** dibanding tanpa masker, dengan goyakan kiri 0,19 px/frame dan
+kanan 0,00 px/frame. Contoh: `samples/hasil/klasik_area_1001183916.mp4`.
 
 #### Mode ROAD — klasik + cyan (disarankan)
 Deteksi tetap memakai `lane_v2.py` (cepat, tidak butuh bobot 178 MB), tapi

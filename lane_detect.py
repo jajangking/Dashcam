@@ -195,7 +195,7 @@ def process_image(input_path: str, output_path: str, progress_cb=None, mask_path
     frame = cv2.imread(input_path)
     if frame is None:
         raise RuntimeError(f"Gagal membaca gambar: {input_path}")
-    det = LaneDetector()
+    det = LaneDetector(use_road_area=True)
     if progress_cb:
         try:
             progress_cb(0, 1, "Mendeteksi jalur")
@@ -203,8 +203,11 @@ def process_image(input_path: str, output_path: str, progress_cb=None, mask_path
             pass
     out, info = det.process(frame)
     if mask_path:
+        from road_area import road_area_mask
+
         roi = det.roi_vertices(frame.shape[0], frame.shape[1])
-        dbg = det.draw(frame, roi, det.color_mask(frame, roi))
+        area = road_area_mask(det, frame.shape[0], frame.shape[1])
+        dbg = det.draw(frame, roi, det.color_mask(frame, roi, area))
         cv2.imwrite(mask_path, dbg)
     if progress_cb:
         try:
@@ -249,7 +252,7 @@ def process_video(
     try:
         from lane_v2 import LaneDetector
 
-        det = LaneDetector()
+        det = LaneDetector(use_road_area=True)
     except Exception:
         det = None
 
@@ -261,6 +264,7 @@ def process_video(
             "right_frames": 0,
             "left_est": 0,
             "right_est": 0,
+            "road_area_dynamic": 0,
             "left_quality_sum": 0.0,
             "right_quality_sum": 0.0,
             "left_jitter": [],
@@ -286,6 +290,7 @@ def process_video(
 
             if stats is not None and info is not None:
                 stats["frames"] += 1
+                stats["road_area_dynamic"] += int(bool(info.get("road_area_dynamic")))
                 for key, side in (("left", "L"), ("right", "R")):
                     if info.get(key):
                         stats[key + "_frames"] += 1

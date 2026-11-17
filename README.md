@@ -149,6 +149,20 @@ Batasan estimasi jarak: jalan dianggap **datar**, lebar lajur diasumsikan 3.5 m,
 dan parameter kamera (tinggi 1.3 m, sudut pandang 55°) masih nilai tipikal —
 belum dikalibrasi ke kamera Anda. Angka jarak adalah **estimasi**, bukan sensor.
 
+### Referensi & open-source
+Riset lengkap ada di **[REFERENSI.md](REFERENSI.md)**. Ringkasnya:
+
+- Target realistis dari benchmark CULane: model terbaik hanya **±70 % F1 di
+  kategori Curve** dan **±75 % di Crowded**. Jadi tikungan sulit bukan tanda
+  kode kita buruk; yang tidak boleh terjadi adalah hasil 0.
+- CULane **menganotasi marka yang terhalang kendaraan berdasarkan konteks**,
+  bukan dikosongkan. Ini melawan keputusan awal saya, dan sejalan dengan usul
+  pengguna.
+- Semua jalur memasang model siap-pakai sudah diuji dan gagal **karena tidak ada
+  akses ke bobot** (bukan karena belum dicari): aset rilis 404/TLS ditutup,
+  4 repo hanya berisi kode, `model_zoo` hanya berisi `url.txt`, HuggingFace &
+  Google Drive tidak bisa diakses.
+
 ### Satu ukuran lebar jalur (permintaan pengguna)
 Sebelumnya sisi yang tidak terdeteksi ditebak dari model lebar dua parameter
 `W(u) = a*u + b`. Itu terlalu rapuh. Sekarang:

@@ -173,6 +173,38 @@ terlihat masuk akal tapi salah total. Sekarang jumlah baris diperiksa (5-200).
 Status model selalu dilaporkan di payload `/live/frame` (`"model": ...`), jadi
 tidak ada kesan "sudah pakai AI" kalau bobotnya belum ada.
 
+### Jalur model LiteRT/TFLite di Termux (`lane_model_tflite.py`)
+Bobot model ternyata **bisa** diunduh sekarang (REFERENSI.md ditulis saat host
+masih tertutup). Memakai UFLD ResNet18/CULane versi LiteRT — 178 MB, asli Android,
+bukan ONNX 385 MB.
+
+```bash
+pkg install -y python-tflite-runtime
+mkdir -p models
+curl -L -o models/ufld.tflite \
+  https://huggingface.co/litert-community/Ultra-Fast-Lane-Detection-LiteRT/resolve/main/ufld.tflite
+
+python lane_model_tflite.py --input samples/case_clear.jpg --output hasil_model.jpg
+python lane_model_tflite.py --input samples/mentah/mentah_1001183916.mp4 --output hasil_model.mp4
+```
+
+Bobot **tidak** di-commit (`.gitignore`). Model dipakai secara opsional lewat CLI;
+`lane_v2.py`, web UI, dan mode LIVE tetap memakai engine klasik.
+
+Hasil ukur di perangkat ini (jangan dipercaya tanpa data berlabel sendiri):
+
+| Uji | Model UFLD | Engine klasik |
+|---|---|---|
+| `case_clear`, garis bawah | meleset 3,4 px / 11,4 px | 0,5 px |
+| `case_belok_240/360/480` | meleset 50 / 103 / 115 px | < 1,1 px |
+| footage asli, 30 frame pertama | 22/30 frame dua marka, selisih 7,6 / 10,3 px | — |
+| goyangan lebar jalur, footage asli | 5,1 px/frame | 0,3 px/frame |
+| kecepatan (4 thread, CPU) | **660 ms/frame** | ±1 ms/frame |
+
+Kesimpulan jujurnya: model ini **lebih lambat dan lebih goyah di rekaman kita**
+(dilatih untuk empat lajur jalan Tiongkok, 800×288 — domain shift). Disimpan
+sebagai jalur percobaan dan perbandingan, bukan pengganti default.
+
 ### Referensi & open-source
 Riset lengkap ada di **[REFERENSI.md](REFERENSI.md)**. Ringkasnya:
 

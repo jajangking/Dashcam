@@ -205,6 +205,26 @@ Kesimpulan jujurnya: model ini **lebih lambat dan lebih goyah di rekaman kita**
 (dilatih untuk empat lajur jalan Tiongkok, 800×288 — domain shift). Disimpan
 sebagai jalur percobaan dan perbandingan, bukan pengganti default.
 
+#### Fallback saat deteksi hilang total (`hybrid_video.py`)
+Model berguna justru untuk kasus yang gagal di `README.md` bagian "orang melintas
+detik ke-2" — 62/444 frame tanpa deteksi apa pun. Jalankan:
+
+```bash
+python hybrid_video.py --input samples/mentah/mentah_1001183916.mp4 \
+                       --output results/hybrid_1001183916.mp4
+```
+
+Engine klasik tetap dipakai di semua frame; model hanya dipanggil kalau dua sisi
+hilang, dan garisnya digambar **cyan** berlabel "MODEL". Diukur pada footage asli:
+
+| | Klasik saja | Klasik + fallback model |
+|---|---|---|
+| dua marka tergambar | 374/444 (84%) | **439/444 (99%)** |
+| frame tetap kosong | 70 | 5 |
+
+Contoh hasil: `samples/hasil/hybrid_1001183916.mp4`. Catatan: garis model dan
+garis klasik bisa meloncat ±8–10 px di titik pergantian — ini belum di-smoothing.
+
 ### Referensi & open-source
 Riset lengkap ada di **[REFERENSI.md](REFERENSI.md)**. Ringkasnya:
 

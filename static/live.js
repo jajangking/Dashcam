@@ -221,7 +221,7 @@
 
     // lintasan tengah jalur ke depan (oranye putus-putus)
     const g = res.geometry;
-    if (g && g.path && g.path.length > 1) {
+    if (g && g.path && g.path.length > 1 && !g.drifting) {
       ctx.beginPath();
       g.path.forEach((p, i) => { const [x, y] = toXY(p); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
       ctx.lineWidth = 3;
@@ -240,9 +240,13 @@
     const g = res.geometry;
     let extra = '';
     if (g && g.valid) {
-      if (g.lane_change && g.lane_change !== 'di tengah jalur') extra = ' · ' + g.lane_change;
-      if (g.moving) extra += ` (${g.shift_m >= 0 ? '+' : ''}${g.shift_m} m)`;
-      if (g.drift_warning) extra += ' · jarak tempuh perkiraan sudah melenceng';
+      if (g.drifting) {
+        extra = ' · estimasi lateral ditahan (garis bergeser bersama, bukan pindah lajur)';
+      } else if (g.lane_change && g.lane_change !== 'di tengah jalur') {
+        extra = ' · ' + g.lane_change;
+        if (g.moving) extra += ` (${g.shift_m >= 0 ? '+' : ''}${g.shift_m} m)`;
+      }
+      if (g.drift_warning && !g.drifting) extra += ' · perkiraan jarak tempuh mulai melenceng';
     }
     hudStatus.textContent = (res.status || '') + extra;
     sLat.textContent = res.server_ms != null ? res.server_ms.toFixed(0) + ' ms' : '–';
@@ -288,9 +292,13 @@
       const g = res.geometry;
     let extra = '';
     if (g && g.valid) {
-      if (g.lane_change && g.lane_change !== 'di tengah jalur') extra = ' · ' + g.lane_change;
-      if (g.moving) extra += ` (${g.shift_m >= 0 ? '+' : ''}${g.shift_m} m)`;
-      if (g.drift_warning) extra += ' · jarak tempuh perkiraan sudah melenceng';
+      if (g.drifting) {
+        extra = ' · estimasi lateral ditahan (garis bergeser bersama, bukan pindah lajur)';
+      } else if (g.lane_change && g.lane_change !== 'di tengah jalur') {
+        extra = ' · ' + g.lane_change;
+        if (g.moving) extra += ` (${g.shift_m >= 0 ? '+' : ''}${g.shift_m} m)`;
+      }
+      if (g.drift_warning && !g.drifting) extra += ' · perkiraan jarak tempuh mulai melenceng';
     }
     hudStatus.textContent = (res.status || '') + extra;
     } else {

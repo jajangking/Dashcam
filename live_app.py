@@ -32,7 +32,8 @@ from werkzeug.utils import secure_filename
 
 from lane_detect import process_video
 from lane_v2 import LaneDetector
-from road_geometry import RoadModel, Trajectory, centre_path_px, classify_lane_change
+from road_geometry import (LaneDrift, RoadModel, Smoother, Trajectory,
+                           centre_path_px, classify_lane_change)
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
@@ -82,7 +83,9 @@ def _get_session(sid):
                 for old_sid, _ in oldest[: len(SESSIONS) - MAX_SESSIONS + 1]:
                     SESSIONS.pop(old_sid, None)
             sess = {"det": LaneDetector(), "last_seen": time.time(), "frames": 0,
-                    "traj": Trajectory(), "model": None, "lane_change": ""}
+                    "traj": Trajectory(), "model": None, "lane_change": "",
+                    "smoother": Smoother(0.25), "label": "",
+                    "drift": LaneDrift()}
             SESSIONS[sid] = sess
         sess["last_seen"] = time.time()
         sess["frames"] += 1
@@ -120,6 +123,68 @@ def index():
 
 
 # ---------- endpoint kamera ----------
+
+def _empty_geometry(drifting: bool = False) -> dict:
+    return {"valid": False, "lane_change": "", "shift_m": 0.0,
+            "drift_warning": False, "path": [], "moving": False,
+            "drifting": drifting}
+
+
+def _reset_tracking(sess: dict) -> None:
+    sess["traj"].reset()
+    sess["smoother"].reset()
+    sess["drift"].reset()
+    sess["lane_change"] = ""
+    sess["pending"] = None
+
+
+def _update_geometry(sess: dict, det, model: RoadModel, h: int, w: int) -> dict:
+    """Hitung path, offset, dan status pindah jalur untuk satu frame."""
+    left_at = lambda y: det._x(det.left_draw, y)      # noqa: E731
+    right_at = lambda y: det._x(det.right_draw, y)    # noqa: E731
+
+    xl, xr = left_at(h - 1), right_at(h - 1)
+    drifting = sess["drift"].update((xl + xr) / 2.0, xr - xl)
+    traj = sess["traj"]
+    traj.update(model, left_at, right_at)
+
+    raw_path = centre_path_px(model, left_at, right_at)
+    path = [[round(x, 1), round(y, 1)] for x, y in sess["smoother"].path(raw_path)]
+
+    if drifting:
+        # Kedua marka bergeser BERSAMA (terukur korelasi 0.994 pada video tol):
+        # itu deteksi yang ikut mengunci objek bergeser, bukan kendaraan pindah
+        # lajur. Angka lateral dibekukan dan pengguna diberi tahu terus terang.
+        sess["lane_change"] = ""
+        sess["pending"] = None
+        shift = traj.points[-1][1] if traj.points else 0.0
+        return {"valid": True, "lane_change": "", "shift_m": round(float(shift), 2),
+                "drift_warning": True, "path": path,
+                "moving": float(traj.travelled_m) > 0.5,
+                "horizon_row": round(model.horizon_row(), 1), "drifting": True}
+
+    label, shift = classify_lane_change(traj)
+    # histeresis: label baru dipakai setelah muncul 3 frame berturut-turut,
+    # supaya teks di layar tidak berkedip tiap frame.
+    pend = sess.get("pending")
+    if label == sess["lane_change"]:
+        sess["pending"] = None
+    elif pend and pend[0] == label:
+        if pend[1] + 1 >= 3:
+            sess["lane_change"] = label
+            sess["pending"] = None
+        else:
+            sess["pending"] = (label, pend[1] + 1)
+    else:
+        sess["pending"] = (label, 1)
+
+    return {"valid": True, "lane_change": sess["lane_change"],
+            "shift_m": round(float(shift), 2),
+            "drift_warning": bool(traj.drift_warning), "path": path,
+            "moving": float(traj.travelled_m) > 0.5,
+            "horizon_row": round(model.horizon_row(), 1), "drifting": False}
+
+
 @app.route("/live/frame", methods=["POST"])
 def live_frame():
     _prune_sessions()
@@ -150,38 +215,18 @@ def live_frame():
     h, w = frame.shape[:2]
 
     # --- geometri jalan: jarak, lintasan ke depan, perpindahan jalur ---
-    geometry = None
-    if det.lane_w_a is not None and det.left_draw is not None and det.right_draw is not None:
+    geometry = _empty_geometry()
+    lanes_ok = (det.lane_w_a is not None and det.left_draw is not None
+                and det.right_draw is not None)
+    if not lanes_ok:
+        _reset_tracking(sess)
+    else:
         model = RoadModel(det.lane_w_a, det.lane_w_b, h, w)
         sess["model"] = model
-        if model.is_valid():
-            traj = sess["traj"]
-            traj.update(model,
-                        lambda y: det._x(det.left_draw, y),
-                        lambda y: det._x(det.right_draw, y))
-            label, shift = classify_lane_change(traj)
-            sess["lane_change"] = label
-            # lintasan tengah jalur ke depan, langsung dalam koordinat layar
-            path = [[round(x, 1), round(y, 1)] for x, y in
-                    centre_path_px(model,
-                                   lambda y: det._x(det.left_draw, y),
-                                   lambda y: det._x(det.right_draw, y))]
-            geometry = {
-                "valid": True,
-                "lane_change": label,
-                "shift_m": round(float(shift), 2),
-                "drift_warning": bool(traj.drift_warning),
-                "path": path,
-                "moving": float(traj.travelled_m) > 0.5,
-                "horizon_row": round(model.horizon_row(), 1),
-            }
+        if not model.is_valid():
+            _reset_tracking(sess)
         else:
-            geometry = {"valid": False, "lane_change": "", "shift_m": 0.0,
-                        "drift_warning": False, "path": [], "moving": False}
-    else:
-        sess["traj"].reset()
-        geometry = {"valid": False, "lane_change": "", "shift_m": 0.0,
-                    "drift_warning": False, "path": [], "moving": False}
+            geometry = _update_geometry(sess, det, model, h, w)
 
     payload = {
         "sid": sid,

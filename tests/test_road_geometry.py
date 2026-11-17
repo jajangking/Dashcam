@@ -167,3 +167,54 @@ def test_path_mengikuti_tengah_jalur_bukan_sumbu_kamera():
     # dan harus benar-benar bergerak ke atas (bukan garis vertikal di satu x)
     ys = [y for _x, y in pts]
     assert ys == sorted(ys, reverse=True)
+
+
+# ---------- drift bersama (bug yang dilaporkan pengguna) ----------
+def test_drift_bersama_terdeteksi_saat_kedua_garis_bergeser():
+    """Terukur di video tol: korelasi geser kiri/kanan 0.994, lebar jalur tetap."""
+    from road_geometry import LaneDrift
+    drift = LaneDrift()
+    terdeteksi = False
+    for i in range(40):
+        geser = 0 if i < 10 else min(i - 10, 25) * 3.5      # bergeser bersama ~80 px
+        terdeteksi = drift.update(centre_x=540 + geser, width_px=660 + (i % 3))
+    assert terdeteksi, "pergeseran bersama 80 px dengan lebar tetap harus terdeteksi"
+
+
+def test_drift_tidak_menyala_kalau_lebar_jalur_berubah():
+    """Jalur benar-benar melebar/menyempit bukan drift."""
+    from road_geometry import LaneDrift
+    drift = LaneDrift()
+    hasil = False
+    for i in range(40):
+        hasil = drift.update(centre_x=540 + i * 3, width_px=600 + i * 12)
+    assert not hasil
+
+
+def test_drift_tidak_menyala_pada_video_stabil():
+    from pathlib import Path as _P
+    import cv2 as _cv
+    from lane_v2 import LaneDetector as _LD
+    from road_geometry import LaneDrift as _LDft
+    path = _P(__file__).resolve().parent.parent / "samples" / "case_video_clear.mp4"
+    cap = _cv.VideoCapture(str(path))
+    if not cap.isOpened():
+        pytest.skip("video tidak ada")
+    det = _LD()
+    drift = _LDft()
+    nyala = 0
+    n = 0
+    while True:
+        ok, f = cap.read()
+        if not ok:
+            break
+        n += 1
+        det.process(f)
+        if det.left_draw is None or det.right_draw is None:
+            continue
+        xl = det._x(det.left_draw, det.h - 1)
+        xr = det._x(det.right_draw, det.h - 1)
+        if drift.update((xl + xr) / 2.0, xr - xl):
+            nyala += 1
+    cap.release()
+    assert nyala / max(1, n) < 0.05, f"drift salah menyala di {nyala}/{n} frame"

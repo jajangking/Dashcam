@@ -627,12 +627,18 @@ class LaneDetector:
             u_lo, u_hi = 0.86, 1.0
             w_lo = self._width_at(u_lo * h)
             w_hi = self._width_at(u_hi * h)
+            # Ambang kualitas di sini sengaja longgar. Nilai `quality` adalah skor
+            # kemiripan bentuk (0..1) — pada video tol/dashgap nyata nilainya
+            # hanya ~0.3 walaupun kedua marka terdeteksi benar, sehingga ambang
+            # 0.55 membuat geometri metrik praktis TIDAK PERNAH aktif (terukur
+            # 0% pada 3 dari 6 video contoh). Validitas sekarang dijaga oleh
+            # pemeriksaan geometri di bawah (lebar wajar + menyempit ke atas).
             if (
                 w_lo is not None and w_hi is not None
                 and 0.08 * w < w_hi < 1.10 * w
                 and 0.05 * w < w_lo < 1.10 * w
-                and self.left_quality >= 0.55
-                and self.right_quality >= 0.55
+                and self.left_quality >= 0.20
+                and self.right_quality >= 0.20
             ):
                 a_now = (w_hi - w_lo) / (u_hi - u_lo)
                 b_now = w_hi - a_now * u_hi

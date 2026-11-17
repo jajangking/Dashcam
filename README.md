@@ -149,6 +149,31 @@ Batasan estimasi jarak: jalan dianggap **datar**, lebar lajur diasumsikan 3.5 m,
 dan parameter kamera (tinggi 1.3 m, sudut pandang 55°) masih nilai tipikal —
 belum dikalibrasi ke kamera Anda. Angka jarak adalah **estimasi**, bukan sensor.
 
+### Bug yang ditemukan dari keluhan pengguna (path loncat, estimasi melebar)
+Dua bug nyata, keduanya sudah diperbaiki:
+
+1. **Geometri metrik praktis tidak pernah aktif.** Lebar jalur hanya dipelajari kalau
+   *skor kualitas* kedua sisi >= 0.55, padahal pada video tol/dashgap skor itu wajar
+   hanya ~0.33 walaupun kedua marka terdeteksi benar. Terukur: **0 % frame** pada 3
+   dari 6 video contoh. Akibatnya path jarak kosong dan angka melompat-lompat.
+   Validitas sekarang dijaga oleh pemeriksaan geometri (lebar wajar + menyempit ke
+   atas), bukan oleh skor bentuk. Hasil: **0 % -> 100 %**.
+
+2. **"Drift bersama"** — kedua marka bergeser bersama padahal jalannya lurus.
+   Terukur di video tol: korelasi geser kiri vs kanan **0.994**, keduanya bergeser
+   ~59 px, sementara lebar jalur hanya berubah std 1.1 %. Itu deteksi yang ikut
+   mengunci objek bergeser, bukan kendaraan pindah lajur — dan posisi lateral
+   dilaporkan mengembara sampai **2.3 m** tanpa alasan.
+   Sekarang `LaneDrift` mendeteksinya; saat aktif, path **disembunyikan** dan UI
+   menulis terus terang *"estimasi lateral ditahan (garis bergeser bersama)"*,
+   alih-alih menampilkan angka yang salah.
+
+Batasan yang tersisa dan tidak saya sembunyikan: pada video tol, 24 % frame masih
+ditandai drift, dan pada frame sisanya titik path 4 m masih bergoyang ~37 px. Artinya
+**di kondisi marka pudar/jalan tol, estimasi lateral video ini belum layak dipakai** —
+yang saya perbaiki adalah agar sistem berhenti menampilkan angka palsu, bukan
+membuat deteksinya sempurna.
+
 ### Objek (mobil/motor/orang)
 `objects.py` sudah berisi kontrak + geometri estimasi jarak per objek (diuji
 dengan kotak buatan: objek lebih tinggi di layar = lebih jauh, objek di lajur

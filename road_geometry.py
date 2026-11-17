@@ -158,6 +158,101 @@ def centre_path_px(model: RoadModel, left_at, right_at,
 
 
 @dataclass
+class LaneDrift:
+    """Deteksi "drift bersama": kedua marka bergeser bersama padahal jalannya lurus.
+
+    Terukur pada video tol contoh: korelasi pergeseran garis kiri vs kanan 0.994,
+    keduanya bergeser ~59 px, sementara jarak antar keduanya (lebar jalur) hanya
+    berubah 11 px (std 1.7 %). Itu tanda deteksi jendela ikut mengunci objek yang
+    bergeser di layar (mis. bayangan/tepi jalan), bukan jalur yang benar-benar
+    bergeser ke samping.
+
+    Akibatnya kalau dipakai mentah: posisi lateral kendaraan dilaporkan
+    mengembara sampai 2.3 m tanpa alasan.
+    """
+
+    window: int = 30
+    trigger_px: float = 45.0        # geser bersama minimal (piksel, di baris bawah)
+    max_width_change: float = 0.06  # lebar jalur boleh berubah 6% (relatif)
+
+    _centres: List[float] = field(default_factory=list)
+    _widths: List[float] = field(default_factory=list)
+
+    def update(self, centre_x: float, width_px: float) -> bool:
+        if np.isfinite(centre_x) and np.isfinite(width_px) and width_px > 1:
+            self._centres.append(float(centre_x))
+            self._widths.append(float(width_px))
+            if len(self._centres) > self.window:
+                self._centres.pop(0)
+                self._widths.pop(0)
+        if len(self._centres) < 10:
+            return False
+        shift = float(np.max(self._centres) - np.min(self._centres))
+        width_change = float(np.max(self._widths) - np.min(self._widths)) / float(np.mean(self._widths))
+        return shift >= self.trigger_px and width_change <= self.max_width_change
+
+    @property
+    def shift_px(self) -> float:
+        if len(self._centres) < 2:
+            return 0.0
+        return float(self._centres[-1] - self._centres[0])
+
+    def reset(self):
+        self._centres.clear()
+        self._widths.clear()
+
+
+class Smoother:
+    """Penstabil angka antar frame (EMA), supaya path & offset tidak melompat.
+
+    Detektor sudah menghaluskan kurva, tapi besaran turunan (titik tengah jalur,
+    jarak lateral) tetap bergetar karena satu-dua piksel galat di dekat cakrawala
+    bisa berarti puluhan sentimeter. Terukur pada video contoh: simpangan baku
+    titik path 4 m mencapai 40 px dan offset 0.72 m tanpa penstabil ini.
+    """
+
+    def __init__(self, alpha: float = 0.25):
+        self.alpha = float(alpha)
+        self._path: List[List[float]] = []
+        self._offset: Optional[float] = None
+        self._width: Optional[float] = None
+
+    def path(self, pts: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+        if not pts:
+            return []
+        if len(self._path) != len(pts):
+            self._path = [list(p) for p in pts]
+            return list(pts)
+        out = []
+        a = self.alpha
+        for (x, y), prev in zip(pts, self._path):
+            nx = prev[0] + a * (x - prev[0])
+            ny = prev[1] + a * (y - prev[1])
+            prev[0], prev[1] = nx, ny
+            out.append((nx, ny))
+        return out
+
+    def offset(self, value: float) -> float:
+        if self._offset is None or not np.isfinite(self._offset):
+            self._offset = float(value)
+        else:
+            self._offset += self.alpha * (float(value) - self._offset)
+        return self._offset
+
+    def width(self, value: float) -> float:
+        if self._width is None or not np.isfinite(self._width):
+            self._width = float(value)
+        else:
+            self._width += self.alpha * (float(value) - self._width)
+        return self._width
+
+    def reset(self):
+        self._path = []
+        self._offset = None
+        self._width = None
+
+
+@dataclass
 class Trajectory:
     """Jejak kendaraan yang diakumulasi dari geometri marka (tanpa GPS/OBD).
 
@@ -169,16 +264,21 @@ class Trajectory:
     """
 
     reference_distance_m: float = 10.0
+    smooth_alpha: float = 0.25
     points: List[Tuple[float, float]] = field(default_factory=list)  # (maju, geser)
     _prev_offset: Optional[float] = None
     _prev_width: Optional[float] = None
     _travelled: float = 0.0
+    _smoother: Smoother = field(default_factory=Smoother)
+    _shift: float = 0.0
 
     def reset(self):
         self.points.clear()
         self._prev_offset = None
         self._prev_width = None
         self._travelled = 0.0
+        self._smoother = Smoother(self.smooth_alpha)
+        self._shift = 0.0
 
     @property
     def travelled_m(self) -> float:
@@ -194,8 +294,8 @@ class Trajectory:
         y = model.row_at_distance(self.reference_distance_m)
         if y is None:
             return None
-        offset = model.lateral_offset_m(left_at(y), right_at(y), y)
-        width = model.width_px(model.h - 1)
+        offset = self._smoother.offset(model.lateral_offset_m(left_at(y), right_at(y), y))
+        width = self._smoother.width(model.width_px(model.h - 1))
         if not np.isfinite(offset) or not np.isfinite(width) or width <= 1e-6:
             return None
 
@@ -217,8 +317,9 @@ class Trajectory:
         self._prev_width = width
         self._travelled += maju
 
+        self._shift += geser
         last = self.points[-1] if self.points else (0.0, 0.0)
-        pt = (last[0] + maju, last[1] + geser)
+        pt = (last[0] + maju, self._shift)
         self.points.append(pt)
         if len(self.points) > 600:
             self.points = self.points[-600:]
@@ -244,7 +345,9 @@ def classify_lane_change(traj: Trajectory, window: int = 45,
         return "tidak cukup data", 0.0
 
     ys = np.array([p[1] for p in pts], dtype=np.float64)
-    shift = float(ys[-1] - ys[0])
+    # rata-rata 8 sampel terakhir di kedua ujung -> tahan terhadap satu frame liar
+    k = min(8, len(ys) // 2)
+    shift = float(np.mean(ys[-k:]) - np.mean(ys[:k]))
     # ayunan (bolak-balik) besar tapi nettonya kecil = goyangan, bukan pindah
     swing = float(np.max(ys) - np.min(ys))
 

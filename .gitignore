@@ -16,3 +16,7 @@ venv/
 
 # Mode live
 static/*.map
+
+# bobot model (besar, lisensi pihak lain)
+models/*.onnx
+*.onnx

@@ -31,6 +31,7 @@ from flask import Flask, jsonify, render_template, request, send_from_directory
 from werkzeug.utils import secure_filename
 
 from lane_detect import process_video
+from lane_model import OnnxLaneDetector, find_model
 from lane_v2 import LaneDetector
 from road_geometry import (LaneDrift, RoadModel, Smoother, Trajectory,
                            centre_path_px, classify_lane_change)
@@ -186,6 +187,17 @@ def _update_geometry(sess: dict, det, model: RoadModel, h: int, w: int) -> dict:
             "horizon_row": round(model.horizon_row(), 1), "drifting": False}
 
 
+# Model marka (kalau bobotnya dipasang di models/*.onnx). Tanpa bobot, semuanya
+# tetap jalan memakai detektor klasik — statusnya dilaporkan apa adanya.
+_LANE_MODEL = None
+try:
+    _path = find_model("models")
+    if _path:
+        _LANE_MODEL = OnnxLaneDetector(_path)
+except Exception as _exc:
+    _LANE_MODEL = None
+
+
 @app.route("/live/frame", methods=["POST"])
 def live_frame():
     _prune_sessions()
@@ -240,6 +252,8 @@ def live_frame():
         "status": _status_text(info),
         "title": _title_text(info),
         "offset_pct": info["offset_pct"],
+        "model": (_LANE_MODEL.summary() if _LANE_MODEL is not None
+                  else "model marka: tidak aktif (tidak ada bobot di models/)"),
         "turn": info["turn"],
         "left_quality": info["left_quality"],
         "right_quality": info["right_quality"],

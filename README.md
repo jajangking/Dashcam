@@ -149,6 +149,30 @@ Batasan estimasi jarak: jalan dianggap **datar**, lebar lajur diasumsikan 3.5 m,
 dan parameter kamera (tinggi 1.3 m, sudut pandang 55°) masih nilai tipikal —
 belum dikalibrasi ke kamera Anda. Angka jarak adalah **estimasi**, bukan sensor.
 
+### Jalur model ONNX (`lane_model.py`)
+Supaya bisa langsung dipakai di mesin yang punya akses internet penuh, sudah
+disiapkan pemuat model **UFLD/UFLDv2** (row-anchor, CULane/TuSimple):
+
+```bash
+# 1. taruh bobotnya
+cp ufld_culane.onnx models/
+# 2. cek termuat
+python -c "from lane_model import OnnxLaneDetector, find_model; \
+print(OnnxLaneDetector(find_model('models')).summary())"
+```
+
+Yang sudah diuji di sini: pemuatan, praproses (288x800, normalisasi ImageNet),
+pembacaan bentuk masukan/keluaran, pasca-proses `(G*L, R) -> 18 titik x,y`, dan
+penolakan yang jujur saat bobot tidak ada. Diuji memakai model uji berbentuk
+identik UFLD (`tests/test_lane_model.py`).
+
+Bug yang tertangkap justru dari uji itu: pasca-proses versi pertama membaca sumbu
+keluaran terbalik sehingga menghasilkan **800 "baris" alih-alih 18** — angka yang
+terlihat masuk akal tapi salah total. Sekarang jumlah baris diperiksa (5-200).
+
+Status model selalu dilaporkan di payload `/live/frame` (`"model": ...`), jadi
+tidak ada kesan "sudah pakai AI" kalau bobotnya belum ada.
+
 ### Referensi & open-source
 Riset lengkap ada di **[REFERENSI.md](REFERENSI.md)**. Ringkasnya:
 
@@ -206,6 +230,27 @@ footage asli galat sisi kanan **memburuk: median 89 -> 123 px**, lalu 193 px saa
 perluasan ikut memakai lebar asumsi itu. Perubahannya dibatalkan, dan perluasan
 sekarang hanya boleh memakai lebar jalur terukur (>=3 sampel, bukan asumsi).
 Hasil akhir footage asli: **89.0 -> 89.8 px** (praktis tidak berubah).
+
+**Bug "orang melintas di detik ke-2": penyebabnya ketemu, perbaikannya GAGAL.**
+Terukur pada footage asli: detik ke-2 = frame 52-67, **15 frame berturut-turut tanpa
+deteksi apa pun** (orang menutup marka). Setelah itu penjaga bentuk `_sanity`
+tidak punya pembanding, sehingga frame 68 lolos dengan kurva derajat 2 yang
+melengkung keluar layar — garis kiri tampak seperti kail menyentuh tepi gambar,
+garis kanan menempel di badan angkot. Terukur: **17 dari 444 frame** punya kurva
+keluar dari batas gambar.
+
+Dua perbaikan dicoba, keduanya **dibatalkan** karena hasil ukurnya lebih buruk:
+
+| Percobaan | Hasil |
+|---|---|
+| Penjaga kurva di dalam gambar + pita piksel ramping | 17 -> 17 frame (tidak berubah) |
+| Batas pergeseran jendela 0,07w | 17 -> 1 frame, TAPI sisi kanan hilang 14% -> 52% |
+| Batas pergeseran jendela 0,10w | 0 frame, TAPI sisi kanan hilang **88%** |
+
+Kesimpulan jujur: jendela pencarian **memang** melompat ke pagar/tembok putih,
+tapi membatasinya mematikan deteksi sisi kanan yang markanya sudah tipis.
+Membuat ini benar butuh pemisahan objek (segmentasi), bukan tambalan di pencarian
+jendela. Itu pekerjaan model, dan modelnya belum bisa diunduh di sini.
 
 **Bug arah belok: saya tidak berhasil membuktikannya.**
 Anda melaporkan "jalan belok kanan tapi deteksi belok kiri". Yang bisa saya ukur:

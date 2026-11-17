@@ -12,13 +12,41 @@ jadi bisa jalan di Termux/Android.
 ## Struktur
 - `lane_v2.py` — mesin deteksi jalur (dipakai aplikasi web & CLI)
 - `lane_detect.py` — CLI pemrosesan video/gambar + transcode H.264
-- `web_app.py` — antarmuka web (upload, progres, hasil, halaman uji)
+- `live_app.py` — **mode LIVE**: kamera real-time + mode file (Flask)
+- `templates/live.html`, `static/app.css`, `static/live.js` — UI mode live
+- `web_app.py` — antarmuka web lama (upload, progres, hasil, halaman uji)
 - `make_tests.py` — pembuat contoh uji sintetis (`samples/`)
+- `AUDIT.md` — hasil audit kodebase (temuan + prioritas perbaikan)
 - `requirements.txt` — dependensi Python
+
+> **Syarat penting:** output video H.264 butuh `ffmpeg` terpasang
+> (`apt install ffmpeg` / `pkg install ffmpeg` di Termux). Tanpa itu server tetap
+> "selesai" tapi file memakai codec `mp4v` yang **tidak bisa diputar di
+> Chrome/Firefox**. Mode live menampilkan peringatan bila `ffmpeg` tidak ada.
 
 ## Cara pakai
 
-### Web (disarankan)
+### Mode LIVE — kamera real-time (disarankan untuk mencoba)
+```bash
+PORT=5001 python -u live_app.py
+```
+Buka halamannya, tekan **Nyalakan kamera**. Browser mengambil frame dari kamera,
+mengirim JPEG kecil (lebar 640 px, ±13 KB) ke `/live/frame`, lalu server
+mengembalikan **koordinat kurva + angka** — gambar overlay digambar di browser,
+jadi lebih hemat kuota daripada streaming video.
+
+Tersedia juga **Mode file** untuk gambar/video lewat pipeline yang sama (berguna
+kalau kamera diblokir), plus pengaturan fps kirim, kualitas JPEG, dan pilihan kamera.
+
+**Kamera butuh HTTPS.** `getUserMedia` diblokir browser pada `http://` biasa.
+Kalau Anda membuka `http://<ip-hp>:5001` dari HP lain, izin kamera **tidak akan
+muncul** — pakai Mode file, atau taruh di belakang HTTPS (mis. reverse proxy/Caddy,
+atau `ngrok`/`cloudflared`). Ini batasan browser, bukan batasan aplikasi.
+
+Biaya kuota mode live pada 8 fps: ±100 KB/detik (±360 MB/jam). Turunkan fps/kualitas
+di panel kontrol kalau memakai data seluler.
+
+### Web (mode lama: upload file)
 ```bash
 PORT=5001 python -u web_app.py
 ```
@@ -30,8 +58,8 @@ di jaringan yang sama). Halaman hasil menampilkan:
 - **kualitas** tiap sisi (kuat/sedang/lemah),
 - untuk gambar: **masker deteksi** (area yang dianggap marka).
 
-Halaman `/tests` menampilkan galeri contoh uji (lurus, tikungan, marka
-putus-putus, malam, satu sisi, tanpa marka).
+Halaman `/tests` menampilkan galeri contoh uji, tapi **kosong pada clone baru** —
+jalankan `python make_tests.py --run` lebih dulu untuk mengisi `results/`.
 
 ### CLI
 ```bash
@@ -68,9 +96,15 @@ Semua ada di `lane_v2.py` (`LaneDetector.__init__`):
 - `color_mask()` — ambang warna putih/kuning.
 
 ## Hasil uji
-- Contoh sintetis (`samples/case_*.jpg`): galat < 1 px terhadap geometri asli.
-- Video sintetis (lurus, kamera goyang, marka putus, tol): goyangan
-  median ≈ 0.01–2.3 px/frame.
+Diukur ulang terhadap geometri asli (lihat `AUDIT.md` untuk rinciannya):
+- 9 dari 11 contoh sintetis: galat **< 1 px** (median 0.50 px).
+- **Tikungan kanan tajam justru meleset 24–52 px.** Penyebabnya pemilihan derajat
+  polinomial di `lane_v2.fit()` menurunkan marka kanan ke garis lurus ketika rentang
+  vertikalnya < 15 % tinggi gambar. Overlay tetap menulis "kualitas: kuat", jadi
+  kesalahannya tidak terlihat. **Belum diperbaiki.**
+- Goyangan video: 1.06–1.54 px/frame.
+- Frame yang isinya hanya noise **dilaporkan sebagai jalur terdeteksi** (kualitas 1.0).
+  **Belum diperbaiki.**
 
 ## Pengembangan lanjut
 - Deteksi area jalan (drivable area) dengan model segmentasi ringan (ONNX).

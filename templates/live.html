@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deteksi Marka — Live Kamera</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+<div class="wrap">
+
+  <header class="card head">
+    <div>
+      <h1>Deteksi Marka Jalan <span class="tag">LIVE</span></h1>
+      <p class="muted" id="subtitle">Kamera diproses di server, gambar tidak dikirim balik — hanya koordinat garis.</p>
+    </div>
+    <div class="head-actions">
+      <button id="btn-cam" class="btn primary">Nyalakan kamera</button>
+      <label class="btn" for="file-input">Mode file</label>
+      <input id="file-input" type="file" accept="image/*,video/*" hidden>
+    </div>
+  </header>
+
+  <div id="alert" class="alert hidden"></div>
+
+  <section class="card stage">
+    <div class="canvas-wrap">
+      <canvas id="view" width="640" height="360"></canvas>
+      <video id="cam" playsinline muted autoplay hidden></video>
+      <div id="placeholder" class="placeholder">
+        <p><b>Kamera belum aktif</b></p>
+        <p class="muted">Tekan “Nyalakan kamera”. Kalau browser menolak, gunakan <b>Mode file</b>.</p>
+      </div>
+    </div>
+
+    <div class="hud">
+      <div class="hud-line"><span id="hud-title" class="pill">—</span></div>
+      <div class="hud-line muted" id="hud-status">menunggu frame…</div>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="k">FPS kamera</div><div class="v" id="s-cap">–</div></div>
+      <div class="stat"><div class="k">FPS diproses</div><div class="v" id="s-proc">–</div></div>
+      <div class="stat"><div class="k">Latensi server</div><div class="v" id="s-lat">–</div></div>
+      <div class="stat"><div class="k">Span kiri / kanan</div><div class="v" id="s-span">–</div></div>
+    </div>
+
+    <div class="controls">
+      <label class="chk"><input type="checkbox" id="opt-overlay" checked> Gambar overlay di browser</label>
+      <label class="ctl">Kirim <b id="lbl-hz">8</b> fps
+        <input type="range" id="opt-hz" min="2" max="15" step="1" value="8">
+      </label>
+      <label class="ctl">Kualitas JPEG <b id="lbl-q">70</b>
+        <input type="range" id="opt-q" min="40" max="90" step="5" value="70">
+      </label>
+      <label class="ctl">Kamera
+        <select id="opt-device"><option value="">default</option></select>
+      </label>
+    </div>
+
+    <div id="video-result" class="hidden">
+      <p class="muted" id="video-progress"></p>
+      <div class="bar-wrap"><div class="bar" id="video-bar"></div></div>
+      <video id="video-out" controls preload="metadata" class="hidden"></video>
+    </div>
+  </section>
+
+  <section class="card notes">
+    <h2>Catatan jujur soal mode ini</h2>
+    <ul class="muted">
+      <li><b>Kamera butuh HTTPS.</b> <code>getUserMedia</code> diblokir browser di
+        <code>http://</code> biasa. Di preview sandbox ini sudah HTTPS, jadi aman.
+        Kalau Anda jalankan sendiri lalu buka <code>http://&lt;ip-hp&gt;:5001</code> dari
+        HP lain, izin kamera <b>tidak akan muncul</b> — pakai Mode file, atau taruh
+        di belakang HTTPS.</li>
+      <li><b>Bukan pengganti dashcam.</b> Semua analisis jalan di server, dan gambar
+        ikut terkirim ke server. Untuk rekaman perjalanan, yang benar adalah memproses
+        file video (Mode file), bukan streaming kamera.</li>
+      <li><b>Boros kuota.</b> Pada 8 fps, JPEG 640×360 ±13 KB → ±100 KB/detik
+        (±360 MB/jam). Turunkan fps/kualitas kalau pakai data seluler.</li>
+      <li><b>Angka “tikungan” dan “offset” masih kasar</b> (belum terkalibrasi) —
+        lihat <code>AUDIT.md</code> §3.8.</li>
+      {% if not has_ffmpeg %}<li class="warn"><b>ffmpeg tidak terpasang di server.</b>
+        Hasil video Mode file akan memakai codec mp4v yang <b>tidak bisa diputar
+        di Chrome/Firefox</b>. Pasang <code>ffmpeg</code> dulu.</li>{% endif %}
+    </ul>
+  </section>
+
+</div>
+<script src="{{ url_for('static', filename='live.js') }}" data-target-width="{{ target_width }}"></script>
+</body>
+</html>

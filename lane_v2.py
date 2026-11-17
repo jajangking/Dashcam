@@ -1,0 +1,725 @@
+#!/usr/bin/env python3
+"""
+Deteksi jalur v2.1 — fokus pada KESTABILAN.
+
+Perubahan penting dibanding v2.0:
+- fitting dilakukan pada koordinat ternormalisasi (u = y/h) supaya tidak
+  menghasilkan kurva "bergelombang" karena ketidakstabilan numerik;
+- derajat maksimal 2 dan kurva wajib monoton (tidak boleh balik arah);
+- regularisasi temporal: kalau marka yang terlihat hanya potongan kecil,
+  bentuk kurva lebih percaya pada frame sebelumnya (tidak melompat-lompat);
+- pencarian jendela dimulai dari posisi jalur frame sebelumnya (prediksi);
+- fitting robust (IRLS) supaya objek putih lain tidak menarik garis;
+- kualitas deteksi dilaporkan (kuat / sedang / lemah).
+"""
+
+from typing import Dict, List, Optional, Tuple
+
+import cv2
+import numpy as np
+
+
+class LaneDetector:
+    def __init__(
+        self,
+        n_windows: int = 9,
+        margin: int = 100,
+        minpix: int = 40,
+        smooth_alpha: float = 0.45,
+        max_missing: int = 8,
+        estimate_missing: bool = True,
+        max_jump_pct: float = 4.0,
+        color_min_v: int = 145,
+        color_max_s: int = 70,
+    ):
+        self.n_windows = n_windows
+        self.margin = margin
+        self.minpix = minpix
+        self.smooth_alpha = smooth_alpha
+        self.max_missing = max_missing
+        self.estimate_missing = estimate_missing
+        self.max_jump_pct = max_jump_pct
+        self.color_min_v = color_min_v
+        self.color_max_s = color_max_s
+
+        # koefisien selalu dalam koordinat ternormalisasi u = y / h
+        # x(u) = c[0]*u^2 + c[1]*u + c[2]  (derajat 2) atau c[0]*u + c[1]
+        self.left_coeff: Optional[np.ndarray] = None
+        self.right_coeff: Optional[np.ndarray] = None
+        self.left_missing = 0
+        self.right_missing = 0
+        self.left_quality = 0.0
+        self.right_quality = 0.0
+        self.left_span_pct = 0.0
+        self.right_span_pct = 0.0
+        self.lane_w_bottom: Optional[float] = None
+        self.lane_w_samples = 0
+        self.lane_w_mirror = False
+        self.left_estimated = False
+        self.right_estimated = False
+        self.left_stale = False
+        self.right_stale = False
+        self.left_draw = None
+        self.right_draw = None
+
+        self.h = 1
+        self.w = 1
+
+    # ---------- ROI ----------
+    @staticmethod
+    def roi_vertices(h: int, w: int) -> np.ndarray:
+        if h > w:  # portrait
+            return np.array([[
+                (int(w * 0.02), h),
+                (int(w * 0.20), int(h * 0.52)),
+                (int(w * 0.80), int(h * 0.52)),
+                (int(w * 0.98), h),
+            ]], dtype=np.int32)
+        return np.array([[
+            (int(w * 0.02), h),
+            (int(w * 0.30), int(h * 0.58)),
+            (int(w * 0.70), int(h * 0.58)),
+            (int(w * 0.98), h),
+        ]], dtype=np.int32)
+
+    # ---------- bantu ----------
+    def _x(self, coeff: Optional[np.ndarray], y: float) -> float:
+        """Evaluasi garis pada posisi y (piksel) memakai koefisien ternormalisasi."""
+        if coeff is None:
+            return float("nan")
+        return float(np.polyval(coeff, float(y) / float(self.h)))
+
+    def _slope(self, coeff: Optional[np.ndarray], y: float) -> float:
+        """dx/dy (piksel per piksel) di posisi y."""
+        if coeff is None:
+            return float("nan")
+        c = np.asarray(coeff, dtype=np.float64)
+        d = np.polyder(c)  # turunan terhadap u
+        return float(np.polyval(d, float(y) / float(self.h)) / float(self.h))
+
+    # ---------- masker warna ----------
+    def color_mask(self, frame: np.ndarray, roi: np.ndarray) -> np.ndarray:
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        h_ch, s_ch, v_ch = cv2.split(hsv)
+
+        white = ((s_ch < self.color_max_s) & (v_ch > self.color_min_v)).astype(np.uint8) * 255
+        yellow = ((h_ch > 12) & (h_ch < 40) & (s_ch > 80) & (v_ch > 90)).astype(np.uint8) * 255
+        mask = cv2.bitwise_or(white, yellow)
+
+        roi_mask = np.zeros_like(mask)
+        cv2.fillPoly(roi_mask, roi, 255)
+        mask = cv2.bitwise_and(mask, roi_mask)
+
+        k = np.ones((3, 3), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k, iterations=2)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k, iterations=1)
+        return mask
+
+    # ---------- pencarian jendela ----------
+    def _histogram_bases(self, mask: np.ndarray) -> Tuple[int, int]:
+        h, w = mask.shape[:2]
+        hist = np.sum(mask[int(h * 0.65):, :], axis=0)
+        mid = w // 2
+        left = int(np.argmax(hist[:mid])) if hist[:mid].any() else int(w * 0.25)
+        right = mid + int(np.argmax(hist[mid:])) if hist[mid:].any() else int(w * 0.75)
+        return left, right
+
+    def _windows(self, mask: np.ndarray, lx: int, rx: int) -> Tuple[np.ndarray, np.ndarray]:
+        h, w = mask.shape[:2]
+        win_h = max(1, int((h * 0.45) / self.n_windows))
+        left_pts: List[Tuple[int, int]] = []
+        right_pts: List[Tuple[int, int]] = []
+
+        nz_y, nz_x = np.nonzero(mask)
+        for i in range(self.n_windows):
+            y_high = h - i * win_h
+            y_low = max(0, y_high - win_h)
+            band = (nz_y >= y_low) & (nz_y < y_high)
+            for side, cx, store in (("L", lx, left_pts), ("R", rx, right_pts)):
+                x_lo = max(0, cx - self.margin)
+                x_hi = min(w, cx + self.margin)
+                sel = band & (nz_x >= x_lo) & (nz_x < x_hi)
+                xs = nz_x[sel]
+                ys = nz_y[sel]
+                if len(xs) > self.minpix:
+                    cx = int(np.mean(xs))
+                    if side == "L":
+                        lx = cx
+                    else:
+                        rx = cx
+                    store.extend(zip(xs.tolist(), ys.tolist()))
+        return (
+            np.array(left_pts, dtype=np.float64).reshape(-1, 2),
+            np.array(right_pts, dtype=np.float64).reshape(-1, 2),
+        )
+
+    def _window_search(self, mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        h, w = mask.shape[:2]
+        lb, rb = self._histogram_bases(mask)
+        lp, rp = self._windows(mask, lb, rb)
+
+        # pencarian berbasis prediksi hanya dipakai kalau cara biasa gagal
+        # (mencegah garis "ikut bergeser" mengikuti jendela sendiri)
+        if len(lp) + len(rp) < 300 and (self.left_coeff is not None or self.right_coeff is not None):
+            pl = lb
+            pr = rb
+            if self.left_coeff is not None and not self.left_estimated:
+                pl = int(np.clip(self._x(self.left_coeff, h - 2), -w, 2 * w))
+            if self.right_coeff is not None and not self.right_estimated:
+                pr = int(np.clip(self._x(self.right_coeff, h - 2), -w, 2 * w))
+            lp2, rp2 = self._windows(mask, pl, pr)
+            if len(lp2) + len(rp2) > len(lp) + len(rp):
+                lp, rp = lp2, rp2
+        return lp, rp
+
+    # ---------- fitting robust + regularisasi temporal ----------
+    def _fit(
+        self,
+        points: np.ndarray,
+        prior: Optional[np.ndarray],
+        weights: Optional[np.ndarray] = None,
+        min_span_pct: float = 5.0,
+    ) -> Optional[np.ndarray]:
+        if points is None or len(points) < 20:
+            return None
+        y = points[:, 1].astype(np.float64)
+        x = points[:, 0].astype(np.float64)
+        span = float(y.max() - y.min())
+        if span < self.h * min_span_pct / 100.0:
+            return None
+
+        u = y / float(self.h)
+        deg = 2 if (span >= self.h * 0.15 and len(points) >= 150) else 1
+
+        A = np.stack([u ** k for k in range(deg, -1, -1)], axis=1)
+        base_w = np.ones(len(x)) if weights is None else np.asarray(weights, dtype=np.float64)
+
+        # seberapa kuat bukti: rentang vertikal + banyak titik
+        ev = min(1.0, span / (0.35 * self.h)) * min(1.0, len(x) / 1200.0)
+
+        p = None
+        if prior is not None:
+            p = np.asarray(prior, dtype=np.float64)
+            if len(p) > deg + 1:
+                p = p[-(deg + 1):]
+            elif len(p) < deg + 1:
+                # naikkan derajat: kelengkungan awal 0
+                p = np.concatenate([np.zeros(deg + 1 - len(p)), p])
+
+        lam = np.zeros(deg + 1)
+        if p is not None:
+            n = float(len(x))
+            if deg == 2:
+                lam[0] = (1.0 - ev) * 6.0 * n        # kelengkungan: stabil
+                lam[1] = (1.0 - ev) * 0.25 * n       # kemiringan: sedikit stabil
+            else:
+                lam[0] = (1.0 - ev) * 0.30 * n       # derajat 1: kemiringan
+            # posisi (konstanta) selalu mengikuti data
+
+        w = base_w.copy()
+        c = None
+        for _ in range(4):
+            Aw = A * w[:, None]
+            M = Aw.T @ A
+            b = Aw.T @ x
+            if p is not None:
+                M = M + np.diag(lam)
+                b = b + lam * p
+            M = M + 1e-9 * np.eye(deg + 1)
+            try:
+                c = np.linalg.solve(M, b)
+            except np.linalg.LinAlgError:
+                return None
+            r = np.abs(A @ c - x)
+            s = max(3.0, 0.012 * self.h)
+            w = base_w / (1.0 + (r / s) ** 2)
+
+        if c is None or not np.all(np.isfinite(c)):
+            return None
+
+        # batasi kelengkungan yang tidak masuk akal (deg2 tidak bisa membentuk S)
+        if deg == 2:
+            limit = 6.0 * self.w
+            c[0] = float(np.clip(c[0], -limit, limit))
+        return np.asarray(c, dtype=np.float64)
+
+    def _plausible(self, coeff: np.ndarray, side: str) -> bool:
+        """Saringan kasar supaya garis tidak jatuh ke objek yang jelas bukan jalur."""
+        x_top = float(np.polyval(coeff, 0.62))
+        x_mid = float(np.polyval(coeff, 0.80))
+        x_bot = float(np.polyval(coeff, 1.00))
+        if not np.all(np.isfinite([x_top, x_mid, x_bot])):
+            return False
+        # jalur harus berada di dalam/sekitar gambar pada semua ketinggian
+        if not (-0.25 * self.w <= x_mid <= 1.25 * self.w):
+            return False
+        if not (-0.30 * self.w <= x_bot <= 1.30 * self.w):
+            return False
+        if not (-0.10 * self.w <= x_top <= 1.10 * self.w):
+            return False
+        if side == "L" and x_bot > 0.90 * self.w:
+            return False
+        if side == "R" and x_bot < 0.10 * self.w:
+            return False
+        s2 = self._slope(coeff, self.h - 1)
+        if not np.isfinite(s2) or abs(s2) > 3.0:
+            return False
+        return True
+
+    # ---------- blob / garis putus-putus ----------
+    def _blob_candidates(self, mask: np.ndarray, side: str) -> Tuple[List[dict], np.ndarray]:
+        h, w = mask.shape[:2]
+        n, labels, stats, cents = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        out = []
+        for i in range(1, n):
+            area = int(stats[i, cv2.CC_STAT_AREA])
+            bw = int(stats[i, cv2.CC_STAT_WIDTH])
+            bh = int(stats[i, cv2.CC_STAT_HEIGHT])
+            if area < 25 or bh < 4:
+                continue
+            if bw > w * 0.6:
+                continue
+            cx, cy = float(cents[i][0]), float(cents[i][1])
+            if side == "L" and cx >= w * 0.55:
+                continue
+            if side == "R" and cx <= w * 0.45:
+                continue
+            out.append({"cx": cx, "cy": cy, "area": area, "bh": bh, "bw": bw, "label": i})
+        return out, labels
+
+    def _fit_blobs(
+        self,
+        mask: np.ndarray,
+        side: str,
+        prior: Optional[np.ndarray],
+    ) -> Tuple[Optional[np.ndarray], float]:
+        blobs, labels = self._blob_candidates(mask, side)
+        if not blobs:
+            return None, 0.0
+
+        if len(blobs) >= 2:
+            pts = np.array([[b["cx"], b["cy"]] for b in blobs], dtype=np.float64)
+            wts = np.sqrt(np.array([b["area"] for b in blobs], dtype=np.float64))
+            c = self._fit(pts, prior, weights=wts, min_span_pct=4.0)
+            if c is None:
+                return None, 0.0
+            span = pts[:, 1].max() - pts[:, 1].min()
+            q = 0.55 * min(1.0, span / (0.30 * self.h)) + 0.45 * min(1.0, len(blobs) / 6.0)
+            return c, float(min(0.95, q))
+
+        # hanya satu potongan
+        b = blobs[0]
+        if b["cy"] < self.h * 0.70:
+            return None, 0.0
+
+        # potongan memanjang (arahnya bisa dipercaya) -> pakai arah potongan itu
+        if b["bh"] >= 1.5 * b["bw"] and b["bh"] >= 0.02 * self.h:
+            ys, xs = np.nonzero(labels == b["label"])
+            if len(xs) < 15:
+                return None, 0.0
+
+            sample = np.stack([xs, ys], axis=1).astype(np.float32)
+            vx, vy, x0, y0 = cv2.fitLine(sample, cv2.DIST_L2, 0, 0.01, 0.01).ravel()
+            if abs(float(vy)) < 1e-3:
+                return None, 0.0
+            slope = float(vx) / float(vy)  # dx/dy
+            if not (0.05 <= abs(slope) <= 6.0):
+                return None, 0.0
+            if side == "L" and slope > -0.05:
+                return None, 0.0
+            if side == "R" and slope < 0.05:
+                return None, 0.0
+
+            # konversi ke koefisien ternormalisasi (derajat 1)
+            a1 = slope * self.h
+            a0 = float(x0) - slope * float(y0)
+            coeff = np.array([a1, a0], dtype=np.float64)
+            # gabungkan dengan bentuk frame sebelumnya supaya tidak liar
+            if prior is not None and len(prior) == 2:
+                coeff = 0.5 * np.asarray(prior) + 0.5 * coeff
+            return coeff, 0.22
+
+        # potongan pipih/lebar (marka sangat dekat kamera): arahnya tidak bisa
+        # dipakai karena garis jadi hampir datar lalu melejit saat diperpanjang.
+        # Pakai bentuk frame sebelumnya, atau arahkan ke titik hilang.
+        if prior is not None:
+            coeff = np.array(prior, dtype=np.float64)
+            shift = b["cx"] - self._x(coeff, b["cy"])
+            coeff[-1] += shift
+            return coeff, 0.25
+
+        vp_y = 0.58 * self.h
+        if b["cy"] - vp_y < 0.05 * self.h:
+            return None, 0.0
+        slope = (b["cx"] - 0.5 * self.w) / (b["cy"] - vp_y)
+        if not (0.05 <= abs(slope) <= 6.0):
+            return None, 0.0
+        if side == "L" and slope > -0.05:
+            return None, 0.0
+        if side == "R" and slope < 0.05:
+            return None, 0.0
+        a1 = slope * self.h
+        a0 = b["cx"] - slope * b["cy"]
+        return np.array([a1, a0], dtype=np.float64), 0.22
+
+    # ---------- dukungan piksel ----------
+    def _support(self, dmap: np.ndarray, coeff: np.ndarray) -> float:
+        """Fraksi titik kurva yang dekat dengan piksel marka (putih/kuning)."""
+        h, w = dmap.shape[:2]
+        tol = max(10.0, 0.015 * w)
+        us = np.linspace(0.62, 1.0, 24)
+        xs = np.polyval(coeff, us)
+        ys = us * h
+        ok = 0
+        for x, y in zip(xs, ys):
+            xi, yi = int(round(float(x))), int(round(float(y)))
+            if 0 <= xi < w and 0 <= yi < h and dmap[yi, xi] <= tol:
+                ok += 1
+        return ok / float(len(us))
+
+    # ---------- deteksi satu sisi ----------
+    def _detect_side(
+        self,
+        mask: np.ndarray,
+        side: str,
+        pts: np.ndarray,
+        prior: Optional[np.ndarray],
+        dmap: Optional[np.ndarray] = None,
+    ) -> Tuple[Optional[np.ndarray], float, float]:
+        h, w = mask.shape[:2]
+        cand = None
+        quality = 0.0
+        span_pct = 0.0
+
+        if pts is not None and len(pts) >= 150:
+            span = float(pts[:, 1].max() - pts[:, 1].min())
+            span_pct = span / h * 100.0
+            c = self._fit(pts, prior)
+            if c is not None and self._plausible(c, side):
+                cand = c
+                quality = 0.7 * min(1.0, span / (0.30 * h)) + 0.3 * min(1.0, len(pts) / 1200.0)
+                # perbaikan: ambil ulang piksel di sekitar kurva (bantu tikungan)
+                if span > 0.15 * h:
+                    band = _band_points(mask, c, max(40, self.margin), h)
+                    if len(band) >= max(150, len(pts) // 2):
+                        c2 = self._fit(band, cand)
+                        if c2 is not None and self._plausible(c2, side):
+                            cand = c2
+
+        cb, qb = self._fit_blobs(mask, side, prior if cand is None else cand)
+        if cb is not None and (cand is None or qb > quality):
+            if cand is None or self._plausible(cb, side):
+                cand, quality = cb, qb
+
+        if cand is None:
+            return None, 0.0, span_pct
+
+        # garis harus benar-benar berada di atas marka, bukan di area kosong
+        if dmap is not None:
+            sup = self._support(dmap, cand)
+            if sup < 0.08:
+                return None, 0.0, span_pct
+
+        # gerbang: lompatan posisi mendadak hampir selalu salah deteksi
+        if prior is not None and len(prior) > 0:
+            pred = self._x(prior, h - 1)
+            got = self._x(cand, h - 1)
+            tol = (1.5 if quality >= 0.6 else 1.0) * self.max_jump_pct / 100.0 * w
+            if abs(got - pred) > tol:
+                return None, 0.0, span_pct
+        return cand, float(min(1.0, quality)), span_pct
+
+    # ---------- smoothing ----------
+    def _smooth(
+        self,
+        prev: Optional[np.ndarray],
+        new: Optional[np.ndarray],
+        quality: float = 1.0,
+    ) -> Optional[np.ndarray]:
+        if new is None:
+            return prev
+        if prev is None or len(prev) != len(new):
+            return np.asarray(new, dtype=np.float64)
+        new = np.asarray(new, dtype=np.float64)
+        prev = np.asarray(prev, dtype=np.float64)
+        deg = len(new) - 1
+        # haluskan NILAI kurva di beberapa titik (bukan koefisien satu-satu),
+        # supaya bentuk kurva tidak berubah aneh saat koefisien besar.
+        if deg == 2:
+            us = np.array([0.62, 0.80, 1.0])
+            a = np.array([0.16, 0.40, 0.52])
+        else:
+            us = np.array([0.80, 1.0])
+            a = np.array([0.40, 0.52])
+        a = a * float(np.clip(0.35 + 0.65 * quality, 0.35, 1.0))
+        v_prev = np.polyval(prev, us)
+        v_new = np.polyval(new, us)
+        v = v_prev + a * (v_new - v_prev)
+        try:
+            return np.polyfit(us, v, deg)
+        except Exception:
+            return new
+
+    # ---------- proses 1 frame ----------
+    def process(self, frame: np.ndarray, debug_mask: bool = False) -> Tuple[np.ndarray, Dict]:
+        h, w = frame.shape[:2]
+        self.h, self.w = h, w
+        roi = self.roi_vertices(h, w)
+        mask = self.color_mask(frame, roi)
+
+        left_pts, right_pts = self._window_search(mask)
+        dmap = cv2.distanceTransform((255 - mask).astype(np.uint8), cv2.DIST_L2, 3)
+
+        new_left, q_left, span_left = self._detect_side(
+            mask, "L", left_pts, self.left_coeff, dmap
+        )
+        new_right, q_right, span_right = self._detect_side(
+            mask, "R", right_pts, self.right_coeff, dmap
+        )
+
+        if new_left is not None:
+            self.left_coeff = self._smooth(self.left_coeff, new_left, q_left)
+            self.left_missing = 0
+            self.left_stale = False
+            self.left_quality = 0.6 * self.left_quality + 0.4 * q_left if self.left_quality else q_left
+            self.left_span_pct = span_left
+        else:
+            self.left_missing += 1
+            self.left_quality *= 0.9
+            if self.left_missing > self.max_missing:
+                # bentuk terakhir tetap disimpan untuk prediksi, tapi tidak digambar
+                self.left_stale = True
+                self.left_quality = 0.0
+
+        if new_right is not None:
+            self.right_coeff = self._smooth(self.right_coeff, new_right, q_right)
+            self.right_missing = 0
+            self.right_stale = False
+            self.right_quality = 0.6 * self.right_quality + 0.4 * q_right if self.right_quality else q_right
+            self.right_span_pct = span_right
+        else:
+            self.right_missing += 1
+            self.right_quality *= 0.9
+            if self.right_missing > self.max_missing:
+                self.right_stale = True
+                self.right_quality = 0.0
+
+        self._reconstruct_missing_side(h, w)
+
+        out = self.draw(frame, roi, mask if debug_mask else None)
+        left_ok = self.left_draw is not None
+        right_ok = self.right_draw is not None
+        info = {
+            "left": left_ok,
+            "right": right_ok,
+            "left_stale": self.left_stale,
+            "right_stale": self.right_stale,
+            "left_estimated": self.left_estimated,
+            "right_estimated": self.right_estimated,
+            "left_points": len(left_pts),
+            "right_points": len(right_pts),
+            "left_quality": round(float(self.left_quality), 2),
+            "right_quality": round(float(self.right_quality), 2),
+            "left_span_pct": round(float(self.left_span_pct), 1),
+            "right_span_pct": round(float(self.right_span_pct), 1),
+            "offset_pct": self.center_offset(w, h),
+            "turn": self.turn_label(w, h),
+        }
+        return out, info
+
+    # ---------- rekonstruksi satu sisi ----------
+    def _reconstruct_missing_side(self, h: int, w: int) -> None:
+        """Tentukan kurva yang digambar; sisi yang hilang boleh diperkirakan.
+
+        Koefisien hasil deteksi (left_coeff/right_coeff) tidak pernah ditimpa
+        dengan perkiraan, supaya perkiraan tidak dianggap deteksi nyata.
+        """
+        ld_fresh = self.left_coeff is not None and not self.left_stale
+        rd_fresh = self.right_coeff is not None and not self.right_stale
+        self.left_estimated = False
+        self.right_estimated = False
+        self.left_draw = self.left_coeff if ld_fresh else None
+        self.right_draw = self.right_coeff if rd_fresh else None
+        if not self.estimate_missing:
+            return
+
+        if ld_fresh and rd_fresh:
+            xl = self._x(self.left_coeff, h - 1)
+            xr = self._x(self.right_coeff, h - 1)
+            width = xr - xl
+            if (
+                0.15 * w < width < 0.95 * w
+                and self.left_quality >= 0.55
+                and self.right_quality >= 0.55
+            ):
+                if self.lane_w_bottom is None:
+                    self.lane_w_bottom = width
+                    self.lane_w_samples = 1
+                    self.lane_w_mirror = False
+                else:
+                    a = 0.12  # lebar jalur sangat halus
+                    self.lane_w_bottom = (1 - a) * self.lane_w_bottom + a * width
+                    self.lane_w_samples += 1
+            return
+
+        if self.lane_w_bottom is None:
+            # belum pernah lihat dua sisi: asumsikan kamera di tengah jalur,
+            # hanya kalau sisi yang terlihat cukup kuat
+            if ld_fresh and self.left_quality >= 0.5:
+                xl = self._x(self.left_coeff, h - 1)
+                guess = 2.0 * (w / 2.0 - xl)
+            elif rd_fresh and self.right_quality >= 0.5:
+                xr = self._x(self.right_coeff, h - 1)
+                guess = 2.0 * (xr - w / 2.0)
+            else:
+                return
+            if not (0.2 * w <= guess <= 0.9 * w):
+                return
+            self.lane_w_bottom = guess
+            self.lane_w_mirror = True
+        elif self.lane_w_samples < 5 and not self.lane_w_mirror:
+            return
+
+        if ld_fresh and self.right_draw is None:
+            est = np.array(self.left_coeff, dtype=np.float64)
+            est[-1] += self.lane_w_bottom
+            self.right_draw = est
+            self.right_estimated = True
+        elif rd_fresh and self.left_draw is None:
+            est = np.array(self.right_coeff, dtype=np.float64)
+            est[-1] -= self.lane_w_bottom
+            self.left_draw = est
+            self.left_estimated = True
+
+    def center_offset(self, w: int, h: Optional[int] = None) -> Optional[float]:
+        if self.left_draw is None or self.right_draw is None:
+            return None
+        y = float(h - 1) if h else 1.0
+        xl = self._x(self.left_draw, y)
+        xr = self._x(self.right_draw, y)
+        return float((((xl + xr) / 2.0) - w / 2.0) / w * 100.0)
+
+    # ---------- overlay ----------
+    def turn_label(self, w: int, h: int) -> Optional[str]:
+        coeffs = [c for c in (self.left_draw, self.right_draw) if c is not None]
+        if not coeffs:
+            return None
+        y1, y2, y3 = h * 0.70, h * 0.85, h - 1
+        vals = []
+        for c in coeffs:
+            x1, x2, x3 = self._x(c, y1), self._x(c, y2), self._x(c, y3)
+            pred = x1 + (x2 - x1) * (y3 - y1) / max(1e-6, (y2 - y1))
+            vals.append(abs(x3 - pred) / w * 100.0)
+        s = max(vals)
+        if s < 0.5:
+            return "lurus"
+        if s < 2.0:
+            return "landai"
+        if s < 3.5:
+            return "sedang"
+        return "tajam"
+
+    @staticmethod
+    def _quality_word(q: float) -> str:
+        if q >= 0.7:
+            return "kuat"
+        if q >= 0.45:
+            return "sedang"
+        return "lemah"
+
+    def draw(self, frame: np.ndarray, roi: np.ndarray, dbg_mask: Optional[np.ndarray] = None) -> np.ndarray:
+        out = frame.copy()
+        h, w = out.shape[:2]
+
+        if dbg_mask is not None:
+            tint = np.zeros_like(out)
+            tint[dbg_mask > 0] = (60, 220, 255)
+            out = cv2.addWeighted(out, 1.0, tint, 0.35, 0)
+
+        ys = np.linspace(h - 1, int(h * 0.60), 40)
+
+        def curve(coeff):
+            xs = np.array([self._x(coeff, y) for y in ys])
+            pts = np.stack([xs, ys], axis=1).astype(np.int32)
+            return pts[(pts[:, 0] >= -w) & (pts[:, 0] <= 2 * w)]
+
+        lpts = curve(self.left_draw) if self.left_draw is not None else None
+        rpts = curve(self.right_draw) if self.right_draw is not None else None
+
+        if lpts is not None and rpts is not None and len(lpts) > 2 and len(rpts) > 2:
+            poly = np.vstack([lpts, rpts[::-1]]).astype(np.int32)
+            shade = out.copy()
+            alpha = 0.10 if (self.left_estimated or self.right_estimated) else 0.20
+            cv2.fillPoly(shade, [poly], (0, 190, 60))
+            out = cv2.addWeighted(shade, alpha, out, 1 - alpha, 0)
+
+        def draw_side(pts, estimated):
+            if pts is None or len(pts) < 2:
+                return
+            if not estimated:
+                cv2.polylines(out, [pts.reshape(-1, 1, 2)], False, (0, 220, 255), 8, cv2.LINE_AA)
+                return
+            color = (0, 150, 255)
+            for i in range(0, len(pts) - 4, 8):
+                seg = pts[i:i + 5]
+                cv2.polylines(out, [seg.reshape(-1, 1, 2)], False, color, 5, cv2.LINE_AA)
+
+        draw_side(lpts, self.left_estimated)
+        draw_side(rpts, self.right_estimated)
+
+        ld = self.left_draw is not None and not self.left_estimated
+        rd = self.right_draw is not None and not self.right_estimated
+        le = self.left_draw is not None and self.left_estimated
+        re_ = self.right_draw is not None and self.right_estimated
+
+        if ld and rd:
+            text, color = "Jalur terdeteksi (kiri+kanan)", (0, 220, 0)
+        elif (ld and re_) or (rd and le):
+            side = "kanan" if re_ else "kiri"
+            text, color = f"Jalur terdeteksi ({side} estimasi)", (0, 200, 255)
+        elif ld or rd:
+            side = "kiri" if ld else "kanan"
+            text, color = f"Sebagian jalur (hanya {side})", (0, 170, 255)
+        else:
+            if self.left_stale or self.right_stale:
+                text, color = "Marka tidak terlihat saat ini", (160, 160, 160)
+            else:
+                text, color = "Jalur tidak terdeteksi", (60, 60, 230)
+
+        cv2.rectangle(out, (0, 0), (w, 52), (20, 24, 32), -1)
+        cv2.putText(out, text, (14, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.62, color, 2, cv2.LINE_AA)
+
+        off = self.center_offset(w, h)
+        turn = self.turn_label(w, h)
+        parts = []
+        if off is not None:
+            side = "kiri" if off < 0 else "kanan"
+            suffix = " (est)" if (self.left_estimated or self.right_estimated) else ""
+            parts.append(f"offset {abs(off):.1f}% ke {side}{suffix}")
+        if turn:
+            parts.append(f"tikungan: {turn}")
+        q = max(self.left_quality if ld else 0.0, self.right_quality if rd else 0.0)
+        if ld or rd:
+            parts.append(f"kualitas: {self._quality_word(q)}")
+        if parts:
+            cv2.putText(
+                out,
+                "  ·  ".join(parts),
+                (14, 46),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (210, 210, 210),
+                1,
+                cv2.LINE_AA,
+            )
+        return out
+
+
+# ---------- util ----------
+def _band_points(mask: np.ndarray, coeff: np.ndarray, band: int, h: int) -> np.ndarray:
+    ys, xs = mask.nonzero()
+    if len(ys) == 0:
+        return np.empty((0, 2), dtype=np.float64)
+    pred = np.polyval(coeff, ys / float(h))
+    keep = np.abs(xs - pred) <= band
+    return np.stack([xs[keep], ys[keep]], axis=1).astype(np.float64)

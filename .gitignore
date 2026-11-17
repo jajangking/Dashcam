@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Log
+*.log
+
+# Hasil proses & data upload pengguna (besar, regenerable)
+results/
+uploads/
+
+# Editor / OS
+.DS_Store
+.venv/
+venv/

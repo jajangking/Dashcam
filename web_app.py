@@ -53,8 +53,10 @@ INDEX_HTML = """
     {% if error %}<div class="error">{{ error }}</div>{% endif %}
     <form method="post" action="/process" enctype="multipart/form-data">
       <div class="row"><input type="file" name="file" accept="image/*,video/*" required></div>
+      <div class="row"><label><input type="checkbox" name="fallback_model" value="1"> Pakai model UFLD untuk frame yang kehilangan kedua marka (garis cyan)</label></div>
       <div class="row"><button type="submit">Proses</button></div>
     </form>
+    <p class="muted">Fallback model butuh <code>models/ufld.tflite</code> (178 MB, tidak ikut di-repo). Kalau tidak ada, proses otomatis memakai engine klasik.</p>
     <p class="muted"><a href="/tests">Lihat contoh uji (input vs hasil) →</a></p>
   </div>
 </body>
@@ -160,10 +162,12 @@ def _set(job_id, **kw):
             job.update(kw)
 
 
-def process_job(job_id, in_path, out_path, kind, orig_name):
+def process_job(job_id, in_path, out_path, kind, orig_name, use_model=False):
     started = time.time()
     _set(job_id, status="running", started_at=started)
     _log(job_id, f"Mulai memproses: {orig_name} ({kind})")
+    if use_model:
+        _log(job_id, "Diminta: fallback model UFLD untuk frame tanpa deteksi")
     try:
         if kind == "image":
             _log(job_id, "Membaca dan mendeteksi jalur pada gambar")
@@ -210,15 +214,44 @@ def process_job(job_id, in_path, out_path, kind, orig_name):
 
             _log(job_id, "Memulai deteksi jalur per-frame")
             stats = {}
-            process_video(
-                str(in_path),
-                str(out_path),
-                show=False,
-                progress_cb=cb,
-                status_cb=lambda m: _log(job_id, m),
-                stats_out=stats,
-            )
+            if use_model:
+                try:
+                    from hybrid_video import process_video_hybrid
+
+                    process_video_hybrid(
+                        str(in_path),
+                        str(out_path),
+                        progress_cb=cb,
+                        status_cb=lambda m: _log(job_id, m),
+                        stats_out=stats,
+                    )
+                except Exception as exc:
+                    _log(job_id, f"Fallback model gagal ({exc}); pakai engine klasik")
+                    stats = {}
+                    process_video(
+                        str(in_path),
+                        str(out_path),
+                        show=False,
+                        progress_cb=cb,
+                        status_cb=lambda m: _log(job_id, m),
+                        stats_out=stats,
+                    )
+            else:
+                process_video(
+                    str(in_path),
+                    str(out_path),
+                    show=False,
+                    progress_cb=cb,
+                    status_cb=lambda m: _log(job_id, m),
+                    stats_out=stats,
+                )
             _log(job_id, "Output video selesai")
+            if stats.get("model_rescued"):
+                _log(
+                    job_id,
+                    f"Model menolong {stats['model_rescued']} frame "
+                    f"({stats.get('model_failed', 0)} tetap kosong)",
+                )
             if stats:
                 _set(job_id, stats=stats)
                 jl = stats.get("left_jitter_px")
@@ -287,6 +320,7 @@ def process():
 
     out_path = RESULT_DIR / out_name
     f.save(in_path)
+    use_model = bool(request.form.get("fallback_model")) and kind == "video"
 
     job = {
         "id": job_id,
@@ -294,6 +328,7 @@ def process():
         "stage": "Menunggu antrean",
         "filename": name,
         "kind": kind,
+        "use_model": use_model,
         "result": out_name,
         "percent": 0.0,
         "processed_frames": 0,
@@ -309,7 +344,11 @@ def process():
         JOBS[job_id] = job
     _log(job_id, "File diterima, job dibuat")
 
-    t = threading.Thread(target=process_job, args=(job_id, in_path, out_path, kind, name), daemon=True)
+    t = threading.Thread(
+        target=process_job,
+        args=(job_id, in_path, out_path, kind, name, use_model),
+        daemon=True,
+    )
     t.start()
     return redirect(url_for("job_page", job_id=job_id))
 
@@ -376,6 +415,14 @@ def job_page(job_id):
             q = st.get(key + "_quality")
             if q is not None:
                 stats_rows.append((f"Kualitas {label}", f"{float(q):.2f}"))
+        if "model_rescued" in st:
+            stats_rows.append(
+                (
+                    "Ditolong model",
+                    f"{int(st['model_rescued'])} frame (cyan) · "
+                    f"{int(st.get('model_failed') or 0)} tetap kosong",
+                )
+            )
 
     return render_template_string(
         JOB_HTML,

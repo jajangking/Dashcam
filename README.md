@@ -222,6 +222,11 @@ hilang, dan garisnya digambar **cyan** berlabel "MODEL". Diukur pada footage asl
 | dua marka tergambar | 374/444 (84%) | **439/444 (99%)** |
 | frame tetap kosong | 70 | 5 |
 
+Lewat web UI juga bisa: buka `http://127.0.0.1:5001`, unggah video, lalu centang
+**"Pakai model UFLD untuk frame yang kehilangan kedua marka"**. Halaman job
+menampilkan baris "Ditolong model" dan log `Model menolong N frame`. Kalau
+`models/ufld.tflite` tidak ada, proses otomatis jatuh ke engine klasik.
+
 Contoh hasil: `samples/hasil/hybrid_1001183916.mp4`. Catatan: garis model dan
 garis klasik bisa meloncat ±8–10 px di titik pergantian — ini belum di-smoothing.
 

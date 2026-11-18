@@ -121,6 +121,20 @@ def detect_lanes(frame: np.ndarray):
     return left, right, roi_vertices
 
 
+def _lines_from_detector(det, h: int, w: int):
+    """Ambil dua garis (x_bottom,y_bottom,x_top,y_top) dari koefisien gambar asli."""
+    out = []
+    y_top = int(h * 0.62)
+    for coeff in (getattr(det, "left_draw", None), getattr(det, "right_draw", None)):
+        if coeff is None:
+            out.append(None)
+            continue
+        xb = int(round(det._x(coeff, h - 1)))
+        xt = int(round(det._x(coeff, y_top)))
+        out.append((xb, h, xt, y_top))
+    return out[0], out[1]
+
+
 def _smooth_line(prev, curr, alpha=0.25):
     if curr is None:
         if prev is None:
@@ -184,8 +198,21 @@ def draw_overlay(
     return overlay
 
 
-def process_image(input_path: str, output_path: str, progress_cb=None, mask_path: Optional[str] = None) -> None:
-    from lane_v2 import LaneDetector
+def _make_detector(engine: str):
+    """engine='bev' = rewrite (default); 'lane_v2' = detektor lama."""
+    if engine == "lane_v2":
+        from lane_v2 import LaneDetector
+
+        return LaneDetector(use_road_area=True)
+    from lane_bev import LaneDetectorBEV
+
+    return LaneDetectorBEV()
+
+
+def process_image(
+    input_path: str, output_path: str, progress_cb=None,
+    mask_path: Optional[str] = None, engine: str = "bev",
+) -> None:
 
     if progress_cb:
         try:
@@ -195,19 +222,26 @@ def process_image(input_path: str, output_path: str, progress_cb=None, mask_path
     frame = cv2.imread(input_path)
     if frame is None:
         raise RuntimeError(f"Gagal membaca gambar: {input_path}")
-    det = LaneDetector(use_road_area=True)
+    det = _make_detector(engine)
     if progress_cb:
         try:
             progress_cb(0, 1, "Mendeteksi jalur")
         except Exception:
             pass
     out, info = det.process(frame)
+    if engine == "bev":
+        left, right = _lines_from_detector(det, frame.shape[0], frame.shape[1])
+        out = draw_overlay(frame, left, right, det.roi_vertices(frame.shape[0], frame.shape[1]))
     if mask_path:
-        from road_area import road_area_mask
+        if hasattr(det, "color_mask"):
+            from road_area import road_area_mask
 
-        roi = det.roi_vertices(frame.shape[0], frame.shape[1])
-        area = road_area_mask(det, frame.shape[0], frame.shape[1])
-        dbg = det.draw(frame, roi, det.color_mask(frame, roi, area))
+            roi = det.roi_vertices(frame.shape[0], frame.shape[1])
+            area = road_area_mask(det, frame.shape[0], frame.shape[1])
+            dbg = det.draw(frame, roi, det.color_mask(frame, roi, area))
+        else:
+            # BEV tidak punya masker warna 2D; overlay hasil sudah cukup sebagai debug
+            dbg = out
         cv2.imwrite(mask_path, dbg)
     if progress_cb:
         try:
@@ -226,6 +260,7 @@ def process_video(
     progress_cb=None,
     status_cb=None,
     stats_out: Optional[dict] = None,
+    engine: str = "bev",
 ) -> int:
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
@@ -250,9 +285,7 @@ def process_video(
 
     frames = 0
     try:
-        from lane_v2 import LaneDetector
-
-        det = LaneDetector(use_road_area=True)
+        det = _make_detector(engine)
     except Exception:
         det = None
 
@@ -265,6 +298,7 @@ def process_video(
             "left_est": 0,
             "right_est": 0,
             "road_area_dynamic": 0,
+            "bev_held": 0,
             "left_quality_sum": 0.0,
             "right_quality_sum": 0.0,
             "left_jitter": [],
@@ -282,6 +316,9 @@ def process_video(
             info = None
             if det is not None:
                 out, info = det.process(frame)
+                if engine == "bev":
+                    left, right = _lines_from_detector(det, height, width)
+                    out = draw_overlay(frame, left, right, det.roi_vertices(height, width))
             else:
                 left, right, roi = detect_lanes(frame)
                 out = draw_overlay(frame, left, right, roi)
@@ -291,6 +328,7 @@ def process_video(
             if stats is not None and info is not None:
                 stats["frames"] += 1
                 stats["road_area_dynamic"] += int(bool(info.get("road_area_dynamic")))
+                stats["bev_held"] += int(bool(info.get("bev_held")))
                 for key, side in (("left", "L"), ("right", "R")):
                     if info.get(key):
                         stats[key + "_frames"] += 1
@@ -367,15 +405,19 @@ def main() -> None:
     ap.add_argument("--image", help="Path gambar input (jpg/png)")
     ap.add_argument("--output", required=True, help="Path file output")
     ap.add_argument("--show", action="store_true", help="Tampilkan preview (jika GUI tersedia)")
+    ap.add_argument(
+        "--engine", choices=("bev", "lane_v2"), default="bev",
+        help="bev = rewrite IPM+RANSAC+Kalman (default); lane_v2 = engine lama",
+    )
     args = ap.parse_args()
 
     if bool(args.input) == bool(args.image):
         raise SystemExit("Pilih salah satu: --input <video> atau --image <gambar>")
 
     if args.image:
-        process_image(args.image, args.output)
+        process_image(args.image, args.output, engine=args.engine)
     else:
-        process_video(args.input, args.output, show=args.show)
+        process_video(args.input, args.output, show=args.show, engine=args.engine)
 
 
 if __name__ == "__main__":

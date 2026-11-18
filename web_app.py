@@ -57,7 +57,7 @@ INDEX_HTML = """
       <div class="row">
         <label for="engine" class="muted">Mesin deteksi</label>
         <select name="engine" id="engine">
-          <option value="klasik" selected>Klasik — garis kuning + area jalan (default)</option>
+          <option value="klasik" selected>Klasik — garis kuning + BEV (default, paling stabil)</option>
           <option value="road">Klasik + cyan — garis ROAD, paling stabil (disarankan)</option>
           <option value="model">Model UFLD — garis MODEL, lebih lambat</option>
         </select>
@@ -466,6 +466,8 @@ def job_page(job_id):
                     f"{int(st.get('road_area_dynamic', 0))} frame koridor dinamis",
                 )
             )
+        if "bev_held" in st:
+            stats_rows.append(("BEV hold", f"{int(st.get('bev_held', 0))} frame prediksi"))
         if "road_frames" in st:
             stats_rows.append(
                 (

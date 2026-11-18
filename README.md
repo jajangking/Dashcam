@@ -207,13 +207,38 @@ Kesimpulan jujurnya: model ini **lebih lambat dan lebih goyah di rekaman kita**
 (dilatih untuk empat lajur jalan Tiongkok, 800×288 — domain shift). Disimpan
 sebagai jalur percobaan dan perbandingan, bukan pengganti default.
 
-#### Mode klasik kuning (default)
-Masker area jalan sekarang aktif juga di `lane_detect.py` (CLI/web mode
-"Klasik"). Cara kerja dan alasannya sama seperti di ROAD di bawah: pencarian
-dibatasi ke koridor kurva terpercaya frame sebelumnya. Pada footage 444 frame:
-385/444 sisi kiri, 377/444 sisi kanan, estimasi kanan turun dari 323 ke
-**222 frame** dibanding tanpa masker, dengan goyakan kiri 0,19 px/frame dan
-kanan 0,00 px/frame. Contoh: `samples/hasil/klasik_area_1001183916.mp4`.
+#### Mode klasik kuning (default) — rewrite BEV
+Mode "Klasik" sekarang memakai detektor baru `lane_bev.py`, bukan sliding-window
+`lane_v2`. Alurannya: **IPM ke bird's-eye view → Hough segmen vertikal →
+RANSAC → Kalman/EMA → gerbang akhir di gambar asli**. Di BEV, marka yang sejajar
+jadi hampir vertikal dan paralel, jadi jauh lebih sulit melintir.
+
+Contoh perintah:
+
+```bash
+python lane_detect.py --input video.mp4 --output hasil.mp4
+#_engine lama masih bisa:
+python lane_detect.py --engine lane_v2 --input video.mp4 --output lama.mp4
+```
+
+Dibanding klasik lama + masker area jalan, pada footage 444 frame:
+
+| Metrik | Klasik lama | BEV (baru) |
+|---|---|---|
+| Sisi kiri tergambar | 385/444 | 376/444 |
+| Sisi kanan tergambar | 377/444 | **438/444** |
+| Frame dua sisi hilang | 59 | **6** |
+| Loncatan > 15 px/frame | 11 | **0** |
+| Perubahan slope > 0,15 | 68 | **0** |
+| Goyakan kiri / kanan | 0,19 / 0,00 | **0,00 / 0,00** |
+
+Di clip4 120 frame: lost 39 → **11**, loncatan > 15 px 12 → **0**.
+Catatan jujur: metrik ini mengukur **konsistensi geometri**, bukan akurasi
+terhadap ground truth (dataset berlabel tidak ada). Tapi dua gejala yang kamu
+laporkan — lost dan melintir — memang turun drastis. BEV juga belum diuji ulang
+pada fixture sintetis dan footage low-light; mode `lane_v2` lama masih tersedia
+lewat `--engine lane_v2` kalau diperlukan. Contoh hasil:
+`samples/hasil/klasik_bev_1001183916.mp4`.
 
 #### Mode ROAD — klasik + cyan (disarankan)
 Deteksi tetap memakai `lane_v2.py` (cepat, tidak butuh bobot 178 MB), tapi

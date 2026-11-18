@@ -5,9 +5,9 @@ langsung tanpa harus memproses ulang. Semua H.264 + `yuv420p` (bisa diputar di b
 
 > Penting: lihat kolom "Dibuat dengan". Dua video asli dan empat video sintetis
 > masih dari engine sebelum commit `06a4750` / `2300cfe`; `model_saja_...` dari
-> kode model sebelum penambahan mode ROAD. `road_cyan_1001183916.mp4` dan
-> `klasik_area_1001183916.mp4` dibuat dengan kode terbaru. Kalau mau yang lain
-> disegarkan, regenerasi seperti di bagian bawah.
+> kode model sebelum penambahan mode ROAD. `road_cyan_1001183916.mp4`,
+> `klasik_area_1001183916.mp4`, dan `klasik_bev_1001183916.mp4` dibuat dengan
+> kode terbaru. Kalau mau yang lain disegarkan, regenerasi seperti di bawah.
 
 | File | Sumber | Durasi / frame | Dibuat dengan |
 |---|---|---|---|
@@ -20,7 +20,8 @@ langsung tanpa harus memproses ulang. Semua H.264 + `yuv420p` (bisa diputar di b
 | `hybrid_1001183916.mp4` | `samples/mentah/mentah_1001183916.mp4` | 14,8 s / 444 | klasik + fallback model UFLD TFLite (commit `e04a642` ke atas) |
 | `model_saja_1001183916.mp4` | `samples/mentah/mentah_1001183916.mp4` | 14,8 s / 444 | model UFLD di semua frame, kurva di-smoothing (cyan saja) |
 | `road_cyan_1001183916.mp4` | `samples/mentah/mentah_1001183916.mp4` | 14,8 s / 444 | klasik `lane_v2` + overlay cyan `ROAD` + area jalan |
-| `klasik_area_1001183916.mp4` | `samples/mentah/mentah_1001183916.mp4` | 14,8 s / 444 | klasik kuning `lane_detect` + area jalan (commit baru) |
+| `klasik_area_1001183916.mp4` | `samples/mentah/mentah_1001183916.mp4` | 14,8 s / 444 | klasik kuning lama + area jalan (sebelum rewrite BEV) |
+| `klasik_bev_1001183916.mp4` | `samples/mentah/mentah_1001183916.mp4` | 14,8 s / 444 | klasik kuning hasil rewrite BEV (default sekarang) |
 
 `asli_v1_lama.mp4` vs `asli_v2.mp4` sengaja berpasangan: footage dan frame-nya sama,
 hanya engine-nya beda, jadi perbaikan bisa dibandingkan langsung.
@@ -52,7 +53,13 @@ stabil dan tidak butuh `models/ufld.tflite`.
 klasik, tapi sekarang pencarian markanya sudah dibatasi ke koridor area jalan.
 Hasil 444 frame: 385/444 sisi kiri, 377/444 sisi kanan, estimasi kanan turun
 dari 323 (tanpa masker) menjadi **222 frame**, goyakan kiri 0,19 px/frame dan
-kanan 0,00 px/frame. Ini contoh untuk mode "Klasik" yang jadi default di web.
+kanan 0,00 px/frame. Ini contoh untuk mode "Klasik" sebelum rewrite.
+
+`klasik_bev_1001183916.mp4` adalah mode "Klasik" sekarang: detektor
+`lane_bev.py` (IPM → Hough → RANSAC → Kalman). Footage 444 frame yang sama:
+kiri 376/444, kanan **438/444**, dua sisi hilang tinggal **6 frame**, loncatan
+> 15 px/frame **0**, perubahan slope > 0,15 juga **0**. Bandingkan klasik lama:
+377 kanan, 59 lost, 11 loncatan, 68 slope. Ini yang paling stabil sejauh ini.
 
 ## Yang sudah bagus (bisa diverifikasi di video)
 
